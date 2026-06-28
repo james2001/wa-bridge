@@ -1,10 +1,11 @@
 :root {
   --green: #00a884;
   --green-dark: #008069;
+  --green-light: #d9fdd3;
   --bg: #f0f2f5;
   --panel: #ffffff;
   --header: #f0f2f5;
-  --bubble-out: #d9fdd3;
+  --bubble-out: var(--green-light);
   --bubble-in: #ffffff;
   --text: #111b21;
   --text-muted: #667781;
@@ -278,6 +279,79 @@ button {
   color: var(--danger);
   font-size: 12px;
 }
+/* Barre de recherche des discussions. */
+.sidebar__search {
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.sidebar__search input {
+  width: 100%;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--bg);
+  font-size: 14px;
+}
+.sidebar__search input:focus {
+  outline: none;
+  border-color: var(--green);
+  background: var(--panel);
+}
+
+/* Onglets de filtre (Toutes / Non lues / Groupes). */
+.filterbar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.filterbar::-webkit-scrollbar {
+  display: none;
+}
+.filterchip {
+  border: none;
+  background: var(--bg);
+  color: var(--text-muted);
+  padding: 6px 14px;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.filterchip:hover {
+  background: #e5e9eb;
+}
+.filterchip:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+}
+.filterchip--active {
+  background: var(--green-light);
+  color: var(--green-dark);
+}
+.filterchip__count {
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--green);
+  color: #fff;
+  border-radius: 9px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .sidebar__list {
   flex: 1;
   min-height: 0;
@@ -385,6 +459,14 @@ button {
   align-items: center;
   justify-content: center;
   padding: 0 6px;
+}
+/* Pastille "marqué non lu" (unreadCount === -1, sans nombre). */
+.badge--dot {
+  min-width: 12px;
+  width: 12px;
+  height: 12px;
+  border-radius: 6px;
+  padding: 0;
 }
 
 /* ---------- Zone conversation ---------- */

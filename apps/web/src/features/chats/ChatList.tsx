@@ -9,6 +9,12 @@ import { selectChat, selectSelectedChatJid } from '../ui/uiSlice';
 import { selectConnection } from '../whatsapp/waSlice';
 import { useLogoutMutation } from '../auth/authApi';
 
+type ChatFilter = 'all' | 'unread' | 'groups';
+
+// WhatsApp: unreadCount > 0 = nb de non-lus ; === -1 = "marqué non lu" (sans
+// nombre) ; 0 = lu. On considère "non lu" les deux premiers cas.
+const isUnread = (c: WaChat) => c.unreadCount > 0 || c.unreadCount === -1;
+
 export default function ChatList() {
   const dispatch = useAppDispatch();
   const { data: chats, isLoading, isError } = useGetChatsQuery();
@@ -16,6 +22,8 @@ export default function ChatList() {
   const connection = useAppSelector(selectConnection);
   const [logout] = useLogoutMutation();
   const [showArchived, setShowArchived] = useState(false);
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<ChatFilter>('all');
 
   const meName =
     connection.me?.name ||
@@ -34,6 +42,62 @@ export default function ChatList() {
   const active = useMemo(() => sorted.filter((c) => !c.archived), [sorted]);
   const archived = useMemo(() => sorted.filter((c) => c.archived), [sorted]);
 
+  // Compteurs des onglets (sur les discussions non archivées).
+  const unreadCount = useMemo(
+    () => active.filter(isUnread).length,
+    [active],
+  );
+  const groupCount = useMemo(
+    () => active.filter((c) => c.isGroup).length,
+    [active],
+  );
+
+  const q = query.trim().toLowerCase();
+
+  // Liste principale: filtre d'onglet + recherche (titre ou numéro).
+  const visibleActive = useMemo(
+    () =>
+      active.filter((c) => {
+        if (filter === 'unread' && !isUnread(c)) return false;
+        if (filter === 'groups' && !c.isGroup) return false;
+        if (!q) return true;
+        return (
+          chatTitle(c).toLowerCase().includes(q) ||
+          prettyJid(c.jid).toLowerCase().includes(q)
+        );
+      }),
+    [active, filter, q],
+  );
+
+  // Archivées: mêmes critères (onglet + recherche) que la liste principale,
+  // pour rester cohérent avec l'onglet actif.
+  const visibleArchived = useMemo(
+    () =>
+      archived.filter((c) => {
+        if (filter === 'unread' && !isUnread(c)) return false;
+        if (filter === 'groups' && !c.isGroup) return false;
+        if (!q) return true;
+        return (
+          chatTitle(c).toLowerCase().includes(q) ||
+          prettyJid(c.jid).toLowerCase().includes(q)
+        );
+      }),
+    [archived, filter, q],
+  );
+
+  // Section archivées visible en vue "Toutes" ou pendant une recherche.
+  const showArchivedSection =
+    visibleArchived.length > 0 && (filter === 'all' || q.length > 0);
+  // Déplie automatiquement les archivées pendant une recherche (sinon un
+  // résultat uniquement archivé resterait caché derrière l'en-tête replié).
+  const archivedExpanded = showArchived || q.length > 0;
+
+  const filters: { key: ChatFilter; label: string; count: number }[] = [
+    { key: 'all', label: 'Toutes', count: 0 },
+    { key: 'unread', label: 'Non lues', count: unreadCount },
+    { key: 'groups', label: 'Groupes', count: groupCount },
+  ];
+
   const renderItem = (c: WaChat) => {
     const title = chatTitle(c);
     return (
@@ -42,7 +106,11 @@ export default function ChatList() {
         className={
           'convitem' + (c.jid === selectedJid ? ' convitem--active' : '')
         }
-        onClick={() => dispatch(selectChat(c.jid))}
+        onClick={() => {
+          // Comme WhatsApp Web: ouvrir un résultat vide la recherche.
+          setQuery('');
+          dispatch(selectChat(c.jid));
+        }}
       >
         <Avatar name={title} jid={c.jid} avatarUrl={c.avatarUrl} />
         <div className="convitem__body">
@@ -65,6 +133,12 @@ export default function ChatList() {
             </span>
             {c.unreadCount > 0 && (
               <span className="badge">{c.unreadCount}</span>
+            )}
+            {c.unreadCount === -1 && (
+              <span
+                className="badge badge--dot"
+                title="Marqué comme non lu"
+              />
             )}
           </div>
         </div>
@@ -92,6 +166,36 @@ export default function ChatList() {
         </div>
       </header>
 
+      <div className="sidebar__search">
+        <input
+          type="search"
+          aria-label="Rechercher une discussion"
+          placeholder="Rechercher une discussion"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setQuery('');
+          }}
+        />
+      </div>
+
+      <div className="filterbar">
+        {filters.map((f) => (
+          <button
+            key={f.key}
+            type="button"
+            aria-pressed={filter === f.key}
+            className={
+              'filterchip' + (filter === f.key ? ' filterchip--active' : '')
+            }
+            onClick={() => setFilter(f.key)}
+          >
+            {f.label}
+            {f.count > 0 && <span className="filterchip__count">{f.count}</span>}
+          </button>
+        ))}
+      </div>
+
       <div className="sidebar__list">
         {isLoading && <p className="sidebar__empty">Chargement…</p>}
         {isError && (
@@ -99,27 +203,37 @@ export default function ChatList() {
             Impossible de charger les discussions.
           </p>
         )}
-        {!isLoading && sorted.length === 0 && (
-          <p className="sidebar__empty">Aucune discussion pour le moment.</p>
-        )}
 
-        {archived.length > 0 && (
+        {showArchivedSection && (
           <button
             className="archived-toggle"
             onClick={() => setShowArchived((v) => !v)}
           >
             <span className="archived-toggle__icon">🗄</span>
             <span className="archived-toggle__label">
-              Archivées ({archived.length})
+              Archivées ({visibleArchived.length})
             </span>
             <span className="archived-toggle__chevron">
-              {showArchived ? '▾' : '▸'}
+              {archivedExpanded ? '▾' : '▸'}
             </span>
           </button>
         )}
-        {showArchived && archived.map(renderItem)}
+        {showArchivedSection &&
+          archivedExpanded &&
+          visibleArchived.map(renderItem)}
 
-        {active.map(renderItem)}
+        {visibleActive.map(renderItem)}
+
+        {!isLoading &&
+          !isError &&
+          visibleActive.length === 0 &&
+          !showArchivedSection && (
+            <p className="sidebar__empty">
+              {q || filter !== 'all'
+                ? 'Aucun résultat.'
+                : 'Aucune discussion pour le moment.'}
+            </p>
+          )}
       </div>
     </aside>
   );
