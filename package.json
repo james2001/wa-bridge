@@ -1,0 +1,19 @@
+{
+  "name": "whatapp-clone",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Clone auto-hébergé de WhatsApp Web — messagerie temps réel, appels audio/vidéo, partage d'écran (NestJS + React + LiveKit, dockerisé)",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r --filter \"./packages/*\" run build && pnpm -r --filter \"./apps/*\" run build",
+    "typecheck": "pnpm -r run typecheck",
+    "lint": "pnpm -r run lint",
+    "shared:build": "pnpm --filter @app/shared-types run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

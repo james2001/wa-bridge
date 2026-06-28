@@ -1,0 +1,13 @@
+**/node_modules
+**/dist
+**/.turbo
+.git
+.gitignore
+.env
+.env.*.local
+infra/caddy/certs/*
+infra/livekit/livekit.generated.yaml
+**/*.log
+.idea
+.vscode
+README.md

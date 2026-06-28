@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+apps/api/prisma/generated/
+
+# Env & secrets
+.env
+.env.*.local
+*.local
+
+# TLS certs (générés localement)
+infra/caddy/certs/*
+!infra/caddy/certs/.gitkeep
+caddy_data/
+caddy_config/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Docker volumes locaux éventuels
+.volumes/

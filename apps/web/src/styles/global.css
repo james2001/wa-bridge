@@ -1,0 +1,844 @@
+:root {
+  --green: #00a884;
+  --green-dark: #008069;
+  --bg: #f0f2f5;
+  --panel: #ffffff;
+  --header: #f0f2f5;
+  --bubble-out: #d9fdd3;
+  --bubble-in: #ffffff;
+  --text: #111b21;
+  --text-muted: #667781;
+  --border: #e9edef;
+  --chat-bg: #efeae2;
+  --danger: #d32f2f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial,
+    sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  /* La page elle-même ne défile jamais: seul .msglist est scrollable. */
+  overflow: hidden;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* ---------- Boutons ---------- */
+.btn {
+  border: none;
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.btn--sm {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.btn--primary {
+  background: var(--green);
+  color: #fff;
+}
+.btn--primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.btn--ghost {
+  background: transparent;
+  color: var(--green-dark);
+}
+.iconbtn {
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  color: var(--text-muted);
+}
+.iconbtn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* ---------- Avatars ---------- */
+.avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--green);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.avatar--sm {
+  width: 36px;
+  height: 36px;
+  font-size: 14px;
+}
+
+/* ---------- Splash / Empty ---------- */
+.splash,
+.empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-muted);
+  background: var(--bg);
+  text-align: center;
+  padding: 24px;
+}
+.splash__logo,
+.empty__logo {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--green);
+  color: #fff;
+  font-size: 36px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- Login ---------- */
+.login {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, var(--green-dark) 0 220px, var(--bg) 220px);
+  padding: 24px;
+}
+.login__card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--panel);
+  border-radius: 12px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  padding: 32px 28px;
+}
+.login__brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+.login__logo {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--green);
+  color: #fff;
+  font-size: 28px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.login__brand h1 {
+  margin: 0;
+  font-size: 20px;
+}
+.login__form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.login__form label {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.login__form input {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 16px;
+  outline: none;
+}
+.login__form input:focus {
+  border-color: var(--green);
+}
+.login__hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: #f7f8fa;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 4px 0 0;
+}
+.login__hint code {
+  background: #eceff1;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.login__error {
+  margin-top: 14px;
+  color: var(--danger);
+  font-size: 14px;
+  text-align: center;
+}
+
+/* ---------- Layout 2 colonnes ---------- */
+.layout {
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(300px, 30%) 1fr;
+  /* Ligne unique contrainte à 100%: empêche la grille de grandir avec le
+     contenu (sinon la chaîne de hauteurs casse et .msglist ne scrolle pas). */
+  grid-template-rows: 100%;
+  min-height: 0;
+}
+.layout__main {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--chat-bg);
+}
+
+/* ---------- Sidebar ---------- */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  min-width: 0;
+  min-height: 0;
+}
+.sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--header);
+}
+.sidebar__me {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 14px;
+  min-width: 0;
+}
+.sidebar__me span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar__actions {
+  display: flex;
+}
+.sidebar__new {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.sidebar__new input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 0;
+}
+.sidebar__new-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+.sidebar__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.sidebar__empty {
+  padding: 24px 16px;
+  color: var(--text-muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+.convitem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 10px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.convitem:hover {
+  background: #f5f6f6;
+}
+.convitem--active {
+  background: #f0f2f5;
+}
+.convitem__body {
+  flex: 1;
+  min-width: 0;
+}
+.convitem__top,
+.convitem__bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.convitem__title {
+  font-weight: 600;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.convitem__time {
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.convitem__preview {
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.badge {
+  background: var(--green);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+}
+
+/* ---------- Zone conversation ---------- */
+.chat {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  /* Conteneur flex parent: doit pouvoir rétrécir pour borner .msglist. */
+  min-height: 0;
+}
+.chathdr {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--header);
+  border-bottom: 1px solid var(--border);
+}
+.chathdr__back {
+  display: none;
+}
+.chathdr__info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.chathdr__title {
+  font-weight: 600;
+  font-size: 15px;
+}
+.chathdr__status {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.chathdr__actions {
+  display: flex;
+}
+
+.msglist {
+  flex: 1;
+  /* min-height:0 = correctif flexbox: autorise le rétrécissement sous la
+     taille du contenu pour activer le défilement INTERNE (et non la page). */
+  min-height: 0;
+  overflow-y: auto;
+  overflow-anchor: none;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: relative;
+}
+.msglist__info {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: auto;
+}
+.msglist__loading {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: 0 0 4px;
+}
+.msglist__jump {
+  position: sticky;
+  bottom: 8px;
+  align-self: center;
+  border: none;
+  background: var(--green);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 16px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+/* Wrapper interne des bulles: porte la disposition verticale; sa hauteur est
+   observée (ResizeObserver) pour le re-scroll au chargement des médias. */
+.msglist__content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bubblerow {
+  display: flex;
+  justify-content: flex-start;
+}
+.bubblerow--own {
+  justify-content: flex-end;
+}
+.bubble {
+  max-width: 65%;
+  background: var(--bubble-in);
+  border-radius: 8px;
+  padding: 6px 9px 8px;
+  box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
+  position: relative;
+}
+.bubble--own {
+  background: var(--bubble-out);
+}
+.bubble--failed {
+  border: 1px solid var(--danger);
+}
+.bubble__body {
+  font-size: 14px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* Nom de l'expéditeur (messages entrants en groupe). */
+.bubble__sender {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--green-dark);
+  margin-bottom: 2px;
+}
+
+/* Encart "réponse" (message cité). */
+.bubble__quote {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-left: 3px solid var(--green);
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 4px;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  max-width: 100%;
+}
+.bubble__quote-sender {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green-dark);
+}
+.bubble__quote-text {
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bubble__media {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+  font-weight: 500;
+}
+.bubble__media + .bubble__body {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+}
+
+/* --- Contenu média réel (images, vidéos, audio, documents, stickers) --- */
+.media-image,
+.media-video {
+  display: block;
+  /* Largeur définie (pas 100%): la bulle se dimensionne au contenu, donc
+     width:100% provoquait un effondrement circulaire -> média minuscule. */
+  width: 280px;
+  max-width: 80vw;
+  height: auto;
+  border-radius: 8px;
+  background-color: rgba(0, 0, 0, 0.04);
+  background-size: cover;
+  background-position: center;
+  cursor: pointer;
+}
+.media-video {
+  cursor: default;
+  /* Fond noir propre + hauteur minimale tant que la vidéo n'a pas chargé. */
+  background-color: #000;
+  min-height: 158px;
+}
+.media-sticker {
+  display: block;
+  width: 128px;
+  height: 128px;
+  object-fit: contain;
+  background: transparent;
+}
+.media-caption {
+  font-size: 14px;
+  font-weight: 400;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: var(--text);
+}
+
+/* Carte document cliquable. */
+.media-doc {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 220px;
+  max-width: 320px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.05);
+  text-decoration: none;
+  color: inherit;
+}
+.media-doc:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+.media-doc__icon {
+  font-size: 22px;
+  flex: 0 0 auto;
+}
+.media-doc__info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.media-doc__name {
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.media-doc__meta {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+/* Lecteur audio / note vocale. */
+.media-audio {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 240px;
+}
+.media-audio__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+.media-audio__label {
+  font-weight: 500;
+}
+.media-audio__duration {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.media-audio__player {
+  width: 100%;
+  height: 36px;
+}
+
+/* Placeholder discret pour média indisponible / erreur de chargement. */
+.media-unavailable {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 400;
+  font-style: italic;
+  color: var(--text-muted);
+  padding: 8px 0;
+}
+.media-unavailable__emoji {
+  font-style: normal;
+  font-size: 16px;
+}
+
+/* Lightbox plein écran (image / vidéo). */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.85);
+  padding: 32px;
+}
+.lightbox__content {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 4px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+}
+.lightbox__close {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  border: none;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  font-size: 18px;
+  line-height: 1;
+}
+.bubble__unsupported {
+  display: block;
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-muted);
+}
+.bubble__meta {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  float: right;
+  margin: 4px 0 0 8px;
+}
+.bubble__time {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.bubble__check {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.bubble__check--read {
+  color: #53bdeb;
+}
+
+/* Réactions emoji posées sur un message: petits badges arrondis façon
+   WhatsApp, ancrés en bas de la bulle et chevauchant légèrement son bord. */
+.bubble--has-reactions {
+  /* Réserve l'espace sous la bulle pour les badges qui débordent. */
+  margin-bottom: 14px;
+}
+.bubble__reactions {
+  position: absolute;
+  bottom: -12px;
+  left: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  z-index: 1;
+}
+.bubble--own .bubble__reactions {
+  left: auto;
+  right: 6px;
+}
+.reaction-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 5px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  font-size: 12px;
+  line-height: 18px;
+}
+.reaction-chip--own {
+  border-color: var(--green);
+}
+.reaction-chip__emoji {
+  font-size: 13px;
+}
+.reaction-chip__count {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.composer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--header);
+  border-top: 1px solid var(--border);
+}
+.composer__input {
+  flex: 1;
+  padding: 11px 14px;
+  border: none;
+  border-radius: 20px;
+  font-size: 15px;
+  outline: none;
+  background: #fff;
+}
+.composer__send {
+  border: none;
+  background: var(--green);
+  color: #fff;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.composer__send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---------- Écran de connexion WhatsApp (QR) ---------- */
+.connscreen {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, var(--green-dark) 0 220px, var(--bg) 220px);
+  padding: 24px;
+}
+.connscreen__card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--panel);
+  border-radius: 12px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+}
+.connscreen__brand {
+  margin-bottom: 4px;
+}
+.connscreen__title {
+  margin: 0;
+  font-size: 20px;
+}
+.connscreen__qr {
+  background: #fff;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  line-height: 0;
+}
+.connscreen__steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.7;
+  text-align: left;
+}
+.connscreen__hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.spinner {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 4px solid var(--border);
+  border-top-color: var(--green);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- Responsive (mobile) ---------- */
+@media (max-width: 768px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  .layout__main {
+    display: none;
+  }
+  .layout--chat-open .sidebar {
+    display: none;
+  }
+  .layout--chat-open .layout__main {
+    display: block;
+  }
+  .chathdr__back {
+    display: flex;
+  }
+  .bubble {
+    max-width: 80%;
+  }
+}

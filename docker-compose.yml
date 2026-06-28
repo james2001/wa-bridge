@@ -1,0 +1,109 @@
+name: whatapp-clone
+
+# Pont WhatsApp Web auto-hébergé (Baileys). Démarrable en une commande (`make up`).
+
+services:
+  # --- Reverse proxy & terminaison TLS ---
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      # Ports hôte paramétrables (défaut 80/443). Voir HTTP_PORT/HTTPS_PORT dans .env.
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp" # HTTP/3
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - frontend
+    networks: [whatapp]
+
+  # --- Cache local (chats / messages / contacts) ---
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [whatapp]
+
+  # --- Migrations one-shot ---
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: build
+    command: ["sh", "-c", "cd apps/api && pnpm exec prisma migrate deploy"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks: [whatapp]
+
+  # --- API NestJS + pont WhatsApp (Baileys) ---
+  backend:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: runtime
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV}
+      API_PORT: ${API_PORT}
+      DATABASE_URL: ${DATABASE_URL}
+      APP_PASSWORD: ${APP_PASSWORD}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      WA_AUTH_DIR: /data/wa-auth
+    volumes:
+      # Session WhatsApp persistée (⚠ contient les identifiants de session — sensible)
+      - wa_auth:/data/wa-auth
+      # Cache des médias déchiffrés (images/vidéos/vocaux téléchargés à la demande)
+      - media_cache:/data/media-cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [whatapp]
+
+  # --- SPA React (nginx) ---
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: runtime
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
+        VITE_SOCKET_URL: ${VITE_SOCKET_URL}
+    restart: unless-stopped
+    networks: [whatapp]
+
+networks:
+  whatapp:
+    driver: bridge
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+  wa_auth:
+  media_cache:

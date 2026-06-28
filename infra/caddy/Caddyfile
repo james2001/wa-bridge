@@ -1,0 +1,23 @@
+# Reverse proxy + TLS. En dev: CA interne Caddy (`tls internal`).
+# En prod: remplacer `tls internal` par un email ACME (Let's Encrypt).
+
+{$APP_DOMAIN} {
+	tls internal
+
+	encode zstd gzip
+
+	# Socket.io (WebSocket) — Caddy gère l'upgrade automatiquement
+	handle /socket.io/* {
+		reverse_proxy {$BACKEND_UPSTREAM:backend:3000}
+	}
+
+	# API REST
+	handle /api/* {
+		reverse_proxy {$BACKEND_UPSTREAM:backend:3000}
+	}
+
+	# SPA React (prod: nginx:80 ; dev: vite:5173, avec HMR WebSocket)
+	handle {
+		reverse_proxy {$FRONTEND_UPSTREAM:frontend:80}
+	}
+}

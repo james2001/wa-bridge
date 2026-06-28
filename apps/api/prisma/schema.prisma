@@ -1,0 +1,81 @@
+// Cache local des données WhatsApp (source de vérité = WhatsApp via Baileys).
+// L'état d'authentification Baileys est persisté dans un volume (fichiers), pas ici.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Contacts / interlocuteurs connus.
+model WaContact {
+  jid       String   @id
+  name      String?
+  pushName  String?  @map("push_name")
+  isGroup   Boolean  @default(false) @map("is_group")
+  avatarUrl String?  @map("avatar_url")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("wa_contacts")
+}
+
+// Discussions (liste de gauche).
+model WaChat {
+  jid                String    @id
+  name               String?
+  isGroup            Boolean   @default(false) @map("is_group")
+  unreadCount        Int       @default(0) @map("unread_count")
+  lastMessageAt      DateTime? @map("last_message_at")
+  lastMessagePreview String?   @map("last_message_preview")
+  pinned             Boolean   @default(false)
+  archived           Boolean   @default(false)
+  avatarUrl          String?   @map("avatar_url")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  @@index([lastMessageAt])
+  @@map("wa_chats")
+}
+
+// Messages (cache pour l'historique et la réactivité). Clé = (chat, id WhatsApp).
+model WaMessage {
+  id         String // id du message WhatsApp
+  chatJid    String   @map("chat_jid")
+  fromMe     Boolean  @map("from_me")
+  senderJid  String?  @map("sender_jid")
+  senderName String?  @map("sender_name")
+  type       String   @default("text")
+  text       String?
+  sentAt     DateTime @map("sent_at")
+  status     String   @default("pending")
+  quotedId   String?  @map("quoted_id")
+  media      Json?
+  reactions  Json?
+  clientId   String?  @map("client_id")
+  // Horodatage de la dernière édition (null si jamais édité).
+  editedAt   DateTime? @map("edited_at")
+  // Message brut Baileys (proto IMessage) — conservé pour (re)télécharger le média.
+  rawMessage Json?    @map("raw_message")
+  // SHA-256 (base64) du fichier média — sert à dédupliquer la double livraison LID.
+  fileSha256 String?  @map("file_sha256")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@id([chatJid, id])
+  @@index([chatJid, sentAt])
+  @@index([chatJid, fileSha256])
+  @@map("wa_messages")
+}
+
+// Correspondance LID (identité masquée WhatsApp) -> numéro (@s.whatsapp.net).
+// Apprise depuis key.senderLid/senderPn (DM) et key.participant/participantPn (groupes).
+model WaLidMap {
+  lid       String   @id
+  pn        String
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([pn])
+  @@map("wa_lid_map")
+}

@@ -1,0 +1,39 @@
+# Overlay développement: hot reload backend (Nest watch) + frontend (Vite).
+# Usage: `make dev`
+
+services:
+  caddy:
+    environment:
+      FRONTEND_UPSTREAM: frontend:5173
+
+  backend:
+    build:
+      target: build
+    command: ["sh", "-c", "cd apps/api && pnpm exec prisma generate && pnpm run start:dev"]
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ./apps/api/src:/app/apps/api/src
+      - ./apps/api/prisma:/app/apps/api/prisma
+      - ./packages/shared-types/src:/app/packages/shared-types/src
+      - wa_auth:/data/wa-auth
+      - media_cache:/data/media-cache
+    ports:
+      - "3000:3000"
+
+  frontend:
+    build:
+      target: build
+    command: ["sh", "-c", "cd apps/web && pnpm run dev -- --host 0.0.0.0 --port 5173"]
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL}
+      VITE_SOCKET_URL: ${VITE_SOCKET_URL}
+    volumes:
+      - ./apps/web/src:/app/apps/web/src
+      - ./apps/web/public:/app/apps/web/public
+      - ./apps/web/index.html:/app/apps/web/index.html
+      - ./packages/shared-types/src:/app/packages/shared-types/src
+
+  postgres:
+    ports:
+      - "5432:5432"
