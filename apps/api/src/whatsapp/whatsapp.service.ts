@@ -113,8 +113,9 @@ export class WhatsappService
   >();
   private static readonly LOCAL_META_GUARD_MS = 20_000;
   private static readonly AVATAR_MAX_CONCURRENT = 3;
-  private static readonly AVATAR_NEG_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 j
-  private static readonly AVATAR_TIMEOUT_MS = 6000;
+  // 24 h: une entrée "pas de photo" mise à tort (timeout) se répare en 1 jour.
+  private static readonly AVATAR_NEG_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
+  private static readonly AVATAR_TIMEOUT_MS = 10000;
   // Borne sur les mutations app-state (mute/archive) qui peuvent ne pas répondre.
   private static readonly CHATMODIFY_TIMEOUT_MS = 8000;
 
@@ -576,6 +577,8 @@ export class WhatsappService
     // Chats
     for (const ch of h.chats ?? []) {
       if (this.isIgnoredChat(ch.id)) continue;
+      // Normalise le suffixe d'appareil (:0) pour éviter les doublons.
+      const jid = this.normJid(ch.id);
       const ts = ch.conversationTimestamp;
       const lastAt =
         ts == null
@@ -583,21 +586,27 @@ export class WhatsappService
           : new Date(
               (typeof ts === 'number' ? ts : ts.toNumber()) * 1000,
             );
-      const name = ch.name ?? (await this.nameFor(ch.id));
+      const name = ch.name ?? (await this.nameFor(jid));
+      // Archive/mute portés par l'historique (app-state) — sinon on les perdait.
+      const meta = this.chatMetaOf(ch);
       await this.prisma.waChat
         .upsert({
-          where: { jid: ch.id },
+          where: { jid },
           create: {
-            jid: ch.id,
+            jid,
             name,
-            isGroup: isJidGroup(ch.id) ?? false,
+            isGroup: isJidGroup(jid) ?? false,
             unreadCount: ch.unreadCount ?? 0,
             lastMessageAt: lastAt,
+            ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
+            ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
           },
           update: {
             name: name ?? undefined,
             unreadCount: ch.unreadCount ?? undefined,
             lastMessageAt: lastAt ?? undefined,
+            ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
+            ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
           },
         })
         .catch(() => undefined);
@@ -1451,16 +1460,26 @@ export class WhatsappService
   }
 
   // Retourne le @s.whatsapp.net canonique d'un JID @lid si connu, sinon le JID.
+  // Normalise un JID utilisateur en retirant le suffixe d'appareil/agent
+  // (ex: "33...:0@s.whatsapp.net" -> "33...@s.whatsapp.net", idem @lid). Sans
+  // ça, WhatsApp livre parfois la même personne sous deux JID -> doublons de
+  // discussions avec non-lus fantômes. Les groupes/broadcast restent intacts.
+  private normJid(jid: string): string {
+    if (jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid')) {
+      try {
+        return jidNormalizedUser(jid);
+      } catch {
+        return jid;
+      }
+    }
+    return jid;
+  }
+
   private canonicalJid(jid: string | null | undefined): string | null {
     if (!jid) return null;
-    if (!isLidUser(jid)) return jid;
-    let norm: string;
-    try {
-      norm = jidNormalizedUser(jid);
-    } catch {
-      norm = jid;
-    }
-    return this.lidToPn.get(norm) ?? this.lidToPn.get(jid) ?? jid;
+    const norm = this.normJid(jid);
+    if (!isLidUser(norm)) return norm;
+    return this.lidToPn.get(norm) ?? this.lidToPn.get(jid) ?? norm;
   }
 
   // Discussions à NE PAS afficher: Status/Stories (status@broadcast) et
@@ -1477,23 +1496,24 @@ export class WhatsappService
     jid: string | null | undefined,
   ): Promise<string | null> {
     if (!jid) return null;
-    if (!isLidUser(jid)) return jid;
-    const cached = this.lidToPn.get(jid);
+    const norm = this.normJid(jid);
+    if (!isLidUser(norm)) return norm;
+    const cached = this.lidToPn.get(norm);
     if (cached) return cached;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const lm = (this.sock as any)?.signalRepository?.lidMapping;
       const pn: string | null | undefined = lm?.getPNForLID
-        ? await lm.getPNForLID(jid)
+        ? await lm.getPNForLID(norm)
         : null;
       if (pn && pn.endsWith('@s.whatsapp.net')) {
-        await this.learnLid(jid, pn);
-        return pn;
+        await this.learnLid(norm, pn);
+        return this.normJid(pn);
       }
     } catch {
       /* noop */
     }
-    return jid;
+    return norm;
   }
 
   // Apprend les correspondances LID->numéro portées par une clé de message.
