@@ -101,6 +101,10 @@ export class WhatsappService
   private lidToPn = new Map<string, string>();
   // Vrai pendant une synchro d'historique: évite un flot d'emit 'chats'.
   private historySyncing = false;
+  // Garde + throttle du backfill des sujets de groupe (évite le rejeu à chaque
+  // reconnexion d'une session qui clignote).
+  private groupBackfillRunning = false;
+  private groupBackfillAt = 0;
 
   // --- Limitation des requêtes de photos de profil ---
   // Le front peut demander ~200 avatars d'un coup (liste). On NE DOIT PAS
@@ -830,9 +834,20 @@ export class WhatsappService
   private async onGroupsUpsert(groups: any[]): Promise<void> {
     for (const g of groups) {
       const subject = cleanName(g?.subject);
-      if (!g?.id || !subject) continue;
+      if (!g?.id || !subject || this.isIgnoredChat(g.id)) continue;
+      // upsert (pas update): un groupe tout neuf (création/jonction) n'a pas
+      // encore de ligne de discussion -> il faut la créer, pas la rater.
       const row = await this.prisma.waChat
-        .update({ where: { jid: g.id }, data: { name: subject } })
+        .upsert({
+          where: { jid: g.id },
+          create: {
+            jid: g.id,
+            name: subject,
+            isGroup: isJidGroup(g.id) ?? true,
+            unreadCount: 0,
+          },
+          update: { name: subject },
+        })
         .catch(() => null);
       if (row) this.emit('chat-upsert', this.chatRowToDto(row));
     }
@@ -843,18 +858,30 @@ export class WhatsappService
   // toujours le sujet -> sinon affichage du JID brut). Une fois par ouverture.
   private async backfillGroupSubjects(): Promise<void> {
     if (!this.sock || this.connection.state !== ConnectionState.OPEN) return;
+    // Garde anti-concurrence + throttle (pas de rejeu sur reconnexions rapprochées).
+    if (this.groupBackfillRunning || Date.now() - this.groupBackfillAt < 30_000) {
+      return;
+    }
+    this.groupBackfillRunning = true;
+    this.groupBackfillAt = Date.now();
     try {
       const all = await this.withTimeout(
         this.sock.groupFetchAllParticipating(),
         WhatsappService.CHATMODIFY_TIMEOUT_MS,
       );
+      // État courant des groupes (1 requête) -> on n'écrit/émet que sur changement.
+      const existing = await this.prisma.waChat
+        .findMany({ where: { isGroup: true }, select: { jid: true, name: true } })
+        .catch(() => [] as { jid: string; name: string | null }[]);
+      const current = new Map(existing.map((r) => [r.jid, r.name]));
       let fixed = 0;
       for (const [jid, meta] of Object.entries(all ?? {})) {
+        if (!current.has(jid)) continue; // pas (encore) une discussion -> onGroupsUpsert/messages s'en chargent
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const display =
           cleanName((meta as any)?.subject) ??
           (await this.groupNameFromParticipants(meta));
-        if (!display) continue;
+        if (!display || current.get(jid) === display) continue; // inchangé
         const row = await this.prisma.waChat
           .update({ where: { jid }, data: { name: display } })
           .catch(() => null);
@@ -863,9 +890,13 @@ export class WhatsappService
           this.emit('chat-upsert', this.chatRowToDto(row));
         }
       }
-      this.logger.log(`Sujets de groupe synchronisés (${fixed} discussion(s))`);
+      if (fixed > 0) {
+        this.logger.log(`Sujets de groupe synchronisés (${fixed} discussion(s))`);
+      }
     } catch (e) {
       this.logger.warn(`backfillGroupSubjects: ${e}`);
+    } finally {
+      this.groupBackfillRunning = false;
     }
   }
 
@@ -879,14 +910,22 @@ export class WhatsappService
       ? meta.participants
       : [];
     if (!parts.length) return null;
-    const me = this.sock?.user?.id
-      ? this.canonicalJid(this.sock.user.id)
-      : null;
-    // Exclut soi-même (comparaison via le cache LID, synchrone).
+    // Identités de soi (numéro normalisé/canonique + LID) pour s'exclure de
+    // façon fiable, les participants étant souvent adressés en @lid.
+    const u = this.sock?.user;
+    const selfSet = new Set<string>();
+    if (u?.id) {
+      selfSet.add(jidNormalizedUser(u.id));
+      const c = this.canonicalJid(u.id);
+      if (c) selfSet.add(c);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const selfLid = (u as any)?.lid;
+    if (typeof selfLid === 'string') selfSet.add(jidNormalizedUser(selfLid));
     const others = parts.filter((p) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const j = this.canonicalJid((p as any)?.id);
-      return j && j !== me;
+      return !!j && !selfSet.has(j);
     });
     const names: string[] = [];
     for (const p of others.slice(0, 3)) {
@@ -1169,10 +1208,7 @@ export class WhatsappService
     try {
       let url: string | null | undefined;
       try {
-        url = await this.withTimeout(
-          sock.profilePictureUrl(jid, 'image'),
-          WhatsappService.AVATAR_TIMEOUT_MS,
-        );
+        url = await this.profilePicUrl(sock, jid);
       } catch (e) {
         // 404 / photo privée = vraiment pas de photo (cache négatif long).
         // Timeout / connexion / autre = transitoire (réessai, pas de marqueur).
@@ -1203,8 +1239,34 @@ export class WhatsappService
         buffer: buf,
         mimetype: res.headers.get('content-type') ?? 'image/jpeg',
       };
+    } catch (e) {
+      // Erreur résiduelle inattendue (lecture du flux…) -> transitoire (pas 500).
+      if (e instanceof NotFoundException) throw e;
+      this.markTransientNoAvatar(jid);
+      this.logger.warn(`getAvatar ${jid}: ${e}`);
+      throw new NotFoundException('Photo indisponible (transitoire)');
     } finally {
       release();
+    }
+  }
+
+  // Tente la photo pleine ('image') puis, sur échec NON-définitif, la miniature
+  // ('preview'): une requête 'image' qui traîne répond souvent en 'preview'.
+  private async profilePicUrl(
+    sock: WASocket,
+    jid: string,
+  ): Promise<string | undefined> {
+    try {
+      return await this.withTimeout(
+        sock.profilePictureUrl(jid, 'image'),
+        WhatsappService.AVATAR_TIMEOUT_MS,
+      );
+    } catch (e) {
+      if (this.isNoProfilePicError(e)) throw e; // vraie absence -> propage
+      return await this.withTimeout(
+        sock.profilePictureUrl(jid, 'preview'),
+        WhatsappService.AVATAR_TIMEOUT_MS,
+      );
     }
   }
 
