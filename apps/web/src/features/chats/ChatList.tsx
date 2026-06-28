@@ -1,6 +1,8 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import type { WaChat } from '@app/shared-types';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { initials, formatChatTime } from '../../lib/format';
+import Avatar from '../../components/Avatar';
 import { useGetChatsQuery } from './chatsApi';
 import { chatTitle, prettyJid } from './utils';
 import { selectChat, selectSelectedChatJid } from '../ui/uiSlice';
@@ -13,6 +15,7 @@ export default function ChatList() {
   const selectedJid = useAppSelector(selectSelectedChatJid);
   const connection = useAppSelector(selectConnection);
   const [logout] = useLogoutMutation();
+  const [showArchived, setShowArchived] = useState(false);
 
   const meName =
     connection.me?.name ||
@@ -27,6 +30,47 @@ export default function ChatList() {
         : [],
     [chats],
   );
+
+  const active = useMemo(() => sorted.filter((c) => !c.archived), [sorted]);
+  const archived = useMemo(() => sorted.filter((c) => c.archived), [sorted]);
+
+  const renderItem = (c: WaChat) => {
+    const title = chatTitle(c);
+    return (
+      <button
+        key={c.jid}
+        className={
+          'convitem' + (c.jid === selectedJid ? ' convitem--active' : '')
+        }
+        onClick={() => dispatch(selectChat(c.jid))}
+      >
+        <Avatar name={title} jid={c.jid} avatarUrl={c.avatarUrl} />
+        <div className="convitem__body">
+          <div className="convitem__top">
+            <span className="convitem__title">
+              {c.muted && (
+                <span className="convitem__muted" title="Notifications coupées">
+                  🔇
+                </span>
+              )}
+              {title}
+            </span>
+            <span className="convitem__time">
+              {formatChatTime(c.lastMessageTs)}
+            </span>
+          </div>
+          <div className="convitem__bottom">
+            <span className="convitem__preview">
+              {c.lastMessagePreview ?? ''}
+            </span>
+            {c.unreadCount > 0 && (
+              <span className="badge">{c.unreadCount}</span>
+            )}
+          </div>
+        </div>
+      </button>
+    );
+  };
 
   return (
     <aside className="sidebar">
@@ -58,42 +102,24 @@ export default function ChatList() {
         {!isLoading && sorted.length === 0 && (
           <p className="sidebar__empty">Aucune discussion pour le moment.</p>
         )}
-        {sorted.map((c) => {
-          const title = chatTitle(c);
-          return (
-            <button
-              key={c.jid}
-              className={
-                'convitem' + (c.jid === selectedJid ? ' convitem--active' : '')
-              }
-              onClick={() => dispatch(selectChat(c.jid))}
-            >
-              <div className="avatar">
-                {c.avatarUrl ? (
-                  <img src={c.avatarUrl} alt="" />
-                ) : (
-                  initials(title)
-                )}
-              </div>
-              <div className="convitem__body">
-                <div className="convitem__top">
-                  <span className="convitem__title">{title}</span>
-                  <span className="convitem__time">
-                    {formatChatTime(c.lastMessageTs)}
-                  </span>
-                </div>
-                <div className="convitem__bottom">
-                  <span className="convitem__preview">
-                    {c.lastMessagePreview ?? ''}
-                  </span>
-                  {c.unreadCount > 0 && (
-                    <span className="badge">{c.unreadCount}</span>
-                  )}
-                </div>
-              </div>
-            </button>
-          );
-        })}
+
+        {archived.length > 0 && (
+          <button
+            className="archived-toggle"
+            onClick={() => setShowArchived((v) => !v)}
+          >
+            <span className="archived-toggle__icon">🗄</span>
+            <span className="archived-toggle__label">
+              Archivées ({archived.length})
+            </span>
+            <span className="archived-toggle__chevron">
+              {showArchived ? '▾' : '▸'}
+            </span>
+          </button>
+        )}
+        {showArchived && archived.map(renderItem)}
+
+        {active.map(renderItem)}
       </div>
     </aside>
   );

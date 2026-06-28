@@ -84,4 +84,18 @@ export class WhatsappController {
     );
     res.send(buffer);
   }
+
+  // Photo de profil d'un contact/groupe. Auth via header Bearer OU ?t=.
+  // 404 si pas de photo -> le front affiche les initiales.
+  // jid encodé côté client (encodeURIComponent) ; Express le décode en param.
+  @Get('avatar/:jid')
+  async avatar(
+    @Param('jid') jid: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const { buffer, mimetype } = await this.wa.getAvatar(jid);
+    res.setHeader('Content-Type', mimetype);
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.send(buffer);
+  }
 }

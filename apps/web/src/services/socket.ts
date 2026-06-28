@@ -90,6 +90,16 @@ export function subscribePresence(jid: string): void {
   socket?.emit('wa:subscribe-presence', { jid });
 }
 
+// Archive / désarchive une discussion.
+export function archiveChat(chatJid: string, archived: boolean): void {
+  socket?.emit('wa:archive', { chatJid, archived });
+}
+
+// Coupe / réactive les notifications d'une discussion (mute).
+export function muteChat(chatJid: string, muted: boolean): void {
+  socket?.emit('wa:mute', { chatJid, muted });
+}
+
 // Délie la session WhatsApp (un nouveau scan QR sera nécessaire).
 export function waLogout(): Promise<{ ok: boolean }> {
   return new Promise((resolve, reject) => {

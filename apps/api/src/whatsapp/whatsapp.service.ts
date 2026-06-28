@@ -7,7 +7,15 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter } from 'node:events';
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import makeWASocket, {
   DisconnectReason,
@@ -38,6 +46,10 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { mapWaMessage, previewOf } from './whatsapp.mapper';
+
+// Seuil départageant une durée relative (petite valeur) d'un timestamp epoch ms
+// (~1.7e12). Sous ce seuil, muteEndTime est une durée => discussion muette.
+const EPOCH_FLOOR_MS = 1_000_000_000_000; // 2001-09-09 en ms
 
 // Événements domaine émis par le service (consommés par la gateway).
 export interface WhatsappEvents {
@@ -81,6 +93,30 @@ export class WhatsappService
   private lidToPn = new Map<string, string>();
   // Vrai pendant une synchro d'historique: évite un flot d'emit 'chats'.
   private historySyncing = false;
+
+  // --- Limitation des requêtes de photos de profil ---
+  // Le front peut demander ~200 avatars d'un coup (liste). On NE DOIT PAS
+  // inonder la socket WhatsApp (session fragile + risque de rate-limit).
+  private avatarInflight = new Map<
+    string,
+    Promise<{ buffer: Buffer; mimetype: string }>
+  >();
+  // Cache négatif: jid -> epoch ms d'expiration (pas de photo connue).
+  private avatarNoPhoto = new Map<string, number>();
+  private avatarActive = 0;
+  private avatarQueue: Array<() => void> = [];
+  // Fenêtre de garde après une action locale mute/archive: on ignore l'écho
+  // chats.update de WhatsApp qui pourrait réécraser l'état qu'on vient de poser.
+  private localMetaGuard = new Map<
+    string,
+    { archivedUntil: number; mutedUntil: number }
+  >();
+  private static readonly LOCAL_META_GUARD_MS = 20_000;
+  private static readonly AVATAR_MAX_CONCURRENT = 3;
+  private static readonly AVATAR_NEG_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 j
+  private static readonly AVATAR_TIMEOUT_MS = 6000;
+  // Borne sur les mutations app-state (mute/archive) qui peuvent ne pas répondre.
+  private static readonly CHATMODIFY_TIMEOUT_MS = 8000;
 
   constructor(
     private readonly config: ConfigService,
@@ -619,11 +655,40 @@ export class WhatsappService
     this.emit('history-synced', { chatJid: null });
   }
 
+  // Lit l'état archivé/mute porté par un objet chat Baileys (upsert ou update).
+  // - ch.archived: boolean (présent seulement si l'info est fournie).
+  // - ch.muteEndTime: timestamp ms (-1 = indéfini, null/0 = non mute).
+  // Retourne des champs `undefined` quand l'info n'est pas présente (=> on ne
+  // touche pas la colonne correspondante).
+  // Frontière Baileys -> typage borné à any.
+  private chatMetaOf(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ch: any,
+  ): { archived: boolean | undefined; muted: boolean | undefined } {
+    const archived =
+      typeof ch?.archived === 'boolean' ? ch.archived : undefined;
+    let muted: boolean | undefined;
+    if (ch?.muteEndTime !== undefined) {
+      const m = ch.muteEndTime;
+      const ms = typeof m === 'number' ? m : m == null ? 0 : Number(m);
+      // muteEndTime arrive sous deux formes selon la source:
+      //  - timestamp absolu (ms epoch) lors d'une synchro/mute depuis le tel,
+      //  - durée relative (ms) dans l'écho de notre propre chatModify (ex 8h).
+      // -1 = muet indéfini ; 0/null = non muet.
+      if (ms === 0 || Number.isNaN(ms)) muted = false;
+      else if (ms === -1) muted = true;
+      else if (ms < EPOCH_FLOOR_MS) muted = true; // durée relative => muet
+      else muted = ms > Date.now(); // timestamp absolu => muet si futur
+    }
+    return { archived, muted };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async onChatsUpsert(chats: any[]): Promise<void> {
     for (const ch of chats) {
       if (this.isIgnoredChat(ch.id)) continue;
       const name = ch.name ?? (await this.nameFor(ch.id));
+      const meta = this.chatMetaOf(ch);
       const row = await this.prisma.waChat
         .upsert({
           where: { jid: ch.id },
@@ -632,8 +697,15 @@ export class WhatsappService
             name,
             isGroup: isJidGroup(ch.id) ?? false,
             unreadCount: ch.unreadCount ?? 0,
+            ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
+            ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
           },
-          update: { name: name ?? undefined, unreadCount: ch.unreadCount ?? undefined },
+          update: {
+            name: name ?? undefined,
+            unreadCount: ch.unreadCount ?? undefined,
+            ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
+            ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
+          },
         })
         .catch(() => null);
       if (row) this.emit('chat-upsert', this.chatRowToDto(row));
@@ -649,10 +721,35 @@ export class WhatsappService
     for (const ch of updates) {
       if (!ch?.id || this.isIgnoredChat(ch.id)) continue;
       const hasUnread = typeof ch.unreadCount === 'number';
-      if (!hasUnread && !ch.name) continue; // rien d'intéressant ici
+      const meta = this.chatMetaOf(ch);
+      // Rien d'intéressant ici (ni non-lus, ni nom, ni archive/mute).
+      if (
+        !hasUnread &&
+        !ch.name &&
+        meta.archived === undefined &&
+        meta.muted === undefined
+      ) {
+        continue;
+      }
       const jid = (await this.resolvePn(ch.id)) ?? ch.id;
-      const unread = hasUnread ? Math.max(0, ch.unreadCount as number) : undefined;
       const name: string | undefined = ch.name ?? undefined;
+      // Si on vient de poser archive/mute localement, ignorer l'écho WhatsApp
+      // (sinon il réécrase notre état avec une valeur parfois incohérente).
+      if (meta.archived !== undefined && this.isMetaGuarded(jid, 'archived')) {
+        meta.archived = undefined;
+      }
+      if (meta.muted !== undefined && this.isMetaGuarded(jid, 'muted')) {
+        meta.muted = undefined;
+      }
+      if (
+        !hasUnread &&
+        !name &&
+        meta.archived === undefined &&
+        meta.muted === undefined
+      ) {
+        continue; // plus rien à écrire après suppression de l'écho gardé
+      }
+      const unread = hasUnread ? Math.max(0, ch.unreadCount as number) : undefined;
       const row = await this.prisma.waChat
         .upsert({
           where: { jid },
@@ -661,10 +758,14 @@ export class WhatsappService
             name: name ?? (await this.nameFor(jid)),
             isGroup: isJidGroup(jid) ?? false,
             unreadCount: unread ?? 0,
+            ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
+            ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
           },
           update: {
             ...(unread !== undefined ? { unreadCount: unread } : {}),
             ...(name ? { name } : {}),
+            ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
+            ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
           },
         })
         .catch(() => null);
@@ -814,6 +915,219 @@ export class WhatsappService
       .update({ where: { jid }, data: { unreadCount: 0 } })
       .catch(() => null);
     if (row) this.emit('chat-upsert', this.chatRowToDto(row));
+  }
+
+  // Archive / désarchive une discussion. WhatsApp exige le dernier message du
+  // chat (clé + timestamp) pour cibler l'opération chatModify. On met TOUJOURS
+  // à jour la colonne locale + on notifie le front, même si l'appel WhatsApp
+  // échoue (ne jamais casser la connexion).
+  // Marque un champ comme posé localement (garde contre l'écho WhatsApp).
+  private guardLocalMeta(jid: string, field: 'archived' | 'muted'): void {
+    const until = Date.now() + WhatsappService.LOCAL_META_GUARD_MS;
+    const cur = this.localMetaGuard.get(jid) ?? {
+      archivedUntil: 0,
+      mutedUntil: 0,
+    };
+    if (field === 'archived') cur.archivedUntil = until;
+    else cur.mutedUntil = until;
+    this.localMetaGuard.set(jid, cur);
+  }
+
+  private isMetaGuarded(jid: string, field: 'archived' | 'muted'): boolean {
+    const g = this.localMetaGuard.get(jid);
+    if (!g) return false;
+    const until = field === 'archived' ? g.archivedUntil : g.mutedUntil;
+    return until > Date.now();
+  }
+
+  async setArchived(chatJid: string, archived: boolean): Promise<void> {
+    const jid = (await this.resolvePn(chatJid)) ?? chatJid;
+    this.guardLocalMeta(jid, 'archived');
+    // 1) État local AUTORITAIRE: on met à jour la colonne + on notifie le front
+    //    immédiatement (le pont reflète l'action sans dépendre de WhatsApp).
+    const row = await this.prisma.waChat
+      .update({ where: { jid }, data: { archived } })
+      .catch(() => null);
+    if (row) this.emit('chat-upsert', this.chatRowToDto(row));
+    // 2) Synchro WhatsApp en best-effort (NE PAS bloquer/awaiter: chatModify
+    //    peut traîner ou ne jamais répondre selon l'état app-state).
+    const last = await this.prisma.waMessage
+      .findFirst({ where: { chatJid: jid }, orderBy: { sentAt: 'desc' } })
+      .catch(() => null);
+    const lastMessages = last
+      ? [
+          {
+            key: { remoteJid: jid, id: last.id, fromMe: last.fromMe },
+            messageTimestamp: Math.floor(last.sentAt.getTime() / 1000),
+          },
+        ]
+      : [];
+    void this.syncChatModify(jid, { archive: archived, lastMessages }, 'archive');
+  }
+
+  // Active / désactive le mode silencieux (mute) d'une discussion. WhatsApp
+  // attend une durée en ms (8h) pour muter, null pour réactiver le son.
+  async setMuted(chatJid: string, muted: boolean): Promise<void> {
+    const jid = (await this.resolvePn(chatJid)) ?? chatJid;
+    this.guardLocalMeta(jid, 'muted');
+    // 1) État local autoritaire d'abord (cf. setArchived).
+    const row = await this.prisma.waChat
+      .update({ where: { jid }, data: { muted } })
+      .catch(() => null);
+    if (row) this.emit('chat-upsert', this.chatRowToDto(row));
+    // 2) Synchro WhatsApp best-effort, sans bloquer.
+    void this.syncChatModify(
+      jid,
+      { mute: muted ? 8 * 60 * 60 * 1000 : null },
+      'mute',
+    );
+  }
+
+  // Pousse une mutation app-state vers WhatsApp sans jamais bloquer l'appelant.
+  // chatModify peut ne pas répondre: on borne par un timeout et on logge.
+  private syncChatModify(
+    jid: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mod: any,
+    label: string,
+  ): void {
+    if (!this.sock || this.connection.state !== ConnectionState.OPEN) return;
+    this.withTimeout(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (this.sock as any).chatModify(mod, jid) as Promise<unknown>,
+      WhatsappService.CHATMODIFY_TIMEOUT_MS,
+    )
+      .then(() => this.logger.log(`chatModify(${label}) OK ${jid}`))
+      .catch((e) => this.logger.warn(`chatModify(${label}) ${jid}: ${e}`));
+  }
+
+  // Photo de profil d'un contact/groupe. Cache disque (fichier 'avatar_<jid>').
+  // 404 (NotFoundException) si pas de photo -> le front affiche les initiales.
+  // Protégé contre l'avalanche de requêtes: cache disque + cache négatif +
+  // déduplication des requêtes en vol + limite de concurrence sur la socket.
+  async getAvatar(jid: string): Promise<{ buffer: Buffer; mimetype: string }> {
+    const safe = 'avatar_' + jid.replace(/[^a-zA-Z0-9]/g, '_');
+    const filePath = join(this.mediaDir, safe);
+
+    // 1) Cache disque (photo déjà téléchargée) -> réponse immédiate.
+    await mkdir(this.mediaDir, { recursive: true }).catch(() => undefined);
+    const cached = await readFile(filePath).catch(() => null);
+    if (cached) return { buffer: cached, mimetype: 'image/jpeg' };
+
+    // 2) Cache négatif mémoire: on sait déjà qu'il n'y a pas de photo -> 404.
+    const negUntil = this.avatarNoPhoto.get(jid);
+    if (negUntil && negUntil > Date.now()) {
+      throw new NotFoundException('Pas de photo de profil');
+    }
+
+    // 2b) Cache négatif disque (survit aux redémarrages): marqueur '<file>.none'.
+    // Évite de re-questionner ~200 contacts sans photo à chaque redémarrage
+    // (protège la session fragile d'un flot de requêtes IQ).
+    const markerStat = await stat(filePath + '.none').catch(() => null);
+    if (
+      markerStat &&
+      Date.now() - markerStat.mtimeMs < WhatsappService.AVATAR_NEG_TTL_MS
+    ) {
+      this.avatarNoPhoto.set(jid, markerStat.mtimeMs + WhatsappService.AVATAR_NEG_TTL_MS);
+      throw new NotFoundException('Pas de photo de profil');
+    }
+
+    // 3) Déduplication: si une requête est déjà en vol pour ce jid, la partager.
+    const existing = this.avatarInflight.get(jid);
+    if (existing) return existing;
+
+    const task = this.fetchAvatar(jid, filePath).finally(() => {
+      this.avatarInflight.delete(jid);
+    });
+    this.avatarInflight.set(jid, task);
+    return task;
+  }
+
+  private async fetchAvatar(
+    jid: string,
+    filePath: string,
+  ): Promise<{ buffer: Buffer; mimetype: string }> {
+    const release = await this.acquireAvatarSlot();
+    try {
+      const url = await this.withTimeout(
+        this.sock?.profilePictureUrl(jid, 'image') ?? Promise.resolve(null),
+        WhatsappService.AVATAR_TIMEOUT_MS,
+      ).catch(() => null);
+      if (!url) {
+        this.markNoAvatar(jid, filePath);
+        throw new NotFoundException('Pas de photo de profil');
+      }
+      const res = await this.withTimeout(
+        fetch(url),
+        WhatsappService.AVATAR_TIMEOUT_MS,
+      );
+      if (!res.ok) {
+        this.markNoAvatar(jid, filePath);
+        throw new NotFoundException('Pas de photo de profil');
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      await writeFile(filePath, buf).catch(() => undefined);
+      // Photo trouvée: purge un éventuel marqueur négatif obsolète.
+      await unlink(filePath + '.none').catch(() => undefined);
+      this.avatarNoPhoto.delete(jid);
+      return {
+        buffer: buf,
+        mimetype: res.headers.get('content-type') ?? 'image/jpeg',
+      };
+    } catch (e) {
+      if (e instanceof NotFoundException) throw e;
+      this.markNoAvatar(jid, filePath);
+      this.logger.warn(`getAvatar ${jid}: ${e}`);
+      throw new NotFoundException('Pas de photo de profil');
+    } finally {
+      release();
+    }
+  }
+
+  // Mémorise (mémoire + marqueur disque) qu'un jid n'a pas de photo.
+  private markNoAvatar(jid: string, filePath: string): void {
+    this.avatarNoPhoto.set(jid, Date.now() + WhatsappService.AVATAR_NEG_TTL_MS);
+    // Marqueur disque vide: la fraîcheur est lue via le mtime du fichier.
+    writeFile(filePath + '.none', '').catch(() => undefined);
+  }
+
+  // Sémaphore: limite le nombre de requêtes simultanées de photo sur la socket.
+  private async acquireAvatarSlot(): Promise<() => void> {
+    await new Promise<void>((resolve) => {
+      if (this.avatarActive < WhatsappService.AVATAR_MAX_CONCURRENT) {
+        this.avatarActive++;
+        resolve();
+      } else {
+        this.avatarQueue.push(() => {
+          this.avatarActive++;
+          resolve();
+        });
+      }
+    });
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.avatarActive--;
+      const next = this.avatarQueue.shift();
+      if (next) next();
+    };
+  }
+
+  private withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timeout')), ms);
+      p.then(
+        (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      );
+    });
   }
 
   // LID d'un numéro via l'API native (pour cibler les accusés de lecture).
@@ -1316,6 +1630,7 @@ export class WhatsappService
     lastMessagePreview: string | null;
     pinned: boolean;
     archived: boolean;
+    muted: boolean;
     avatarUrl: string | null;
   }): WaChat {
     return {
@@ -1327,7 +1642,10 @@ export class WhatsappService
       lastMessagePreview: row.lastMessagePreview,
       pinned: row.pinned,
       archived: row.archived,
-      avatarUrl: row.avatarUrl,
+      muted: row.muted,
+      // URL backend de la photo de profil (servie à la demande; 404 -> initiales).
+      // Le front ajoute le token ?t= pour l'auth.
+      avatarUrl: '/api/wa/avatar/' + encodeURIComponent(row.jid),
     };
   }
 

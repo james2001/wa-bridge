@@ -30,6 +30,7 @@ export interface WaChat {
   lastMessagePreview: string | null;
   pinned: boolean;
   archived: boolean;
+  muted: boolean;
   avatarUrl: string | null;
 }
 

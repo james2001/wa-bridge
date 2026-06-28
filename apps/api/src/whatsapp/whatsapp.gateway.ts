@@ -92,6 +92,7 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
   }
 
   async handleConnection(socket: AppSocket): Promise<void> {
+    this.logger.log(`Client socket connecté: ${socket.id}`);
     // État courant + discussions immédiatement à la connexion d'un client.
     socket.emit('wa:connection', this.wa.getConnection());
     try {
@@ -131,6 +132,22 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
     @MessageBody() input: { chatJid: string; typing: boolean },
   ): Promise<void> {
     await this.wa.setTyping(input.chatJid, input.typing);
+  }
+
+  @SubscribeMessage('wa:archive')
+  async onArchive(
+    @MessageBody() input: { chatJid: string; archived: boolean },
+  ): Promise<void> {
+    this.logger.log(`wa:archive ${input.chatJid} -> ${input.archived}`);
+    await this.wa.setArchived(input.chatJid, input.archived);
+  }
+
+  @SubscribeMessage('wa:mute')
+  async onMute(
+    @MessageBody() input: { chatJid: string; muted: boolean },
+  ): Promise<void> {
+    this.logger.log(`wa:mute ${input.chatJid} -> ${input.muted}`);
+    await this.wa.setMuted(input.chatJid, input.muted);
   }
 
   @SubscribeMessage('wa:subscribe-presence')

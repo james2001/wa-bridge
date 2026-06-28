@@ -33,6 +33,7 @@ model WaChat {
   lastMessagePreview String?   @map("last_message_preview")
   pinned             Boolean   @default(false)
   archived           Boolean   @default(false)
+  muted              Boolean   @default(false)
   avatarUrl          String?   @map("avatar_url")
   updatedAt          DateTime  @updatedAt @map("updated_at")
 

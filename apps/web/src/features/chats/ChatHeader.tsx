@@ -1,10 +1,11 @@
 import { PresenceKind } from '@app/shared-types';
 import type { WaChat, WaPresence } from '@app/shared-types';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
-import { initials } from '../../lib/format';
+import Avatar from '../../components/Avatar';
 import { chatTitle, prettyJid } from './utils';
 import { selectChat } from '../ui/uiSlice';
 import { selectPresence } from '../whatsapp/waSlice';
+import { archiveChat, muteChat } from '../../services/socket';
 
 interface Props {
   chat: WaChat | undefined;
@@ -31,6 +32,9 @@ export default function ChatHeader({ chat, jid }: Props) {
   const title = chat ? chatTitle(chat) : prettyJid(jid);
   const subtitle = presenceText(presence) ?? prettyJid(jid);
 
+  const muted = chat?.muted ?? false;
+  const archived = chat?.archived ?? false;
+
   return (
     <header className="chathdr">
       <button
@@ -40,16 +44,33 @@ export default function ChatHeader({ chat, jid }: Props) {
       >
         ‹
       </button>
-      <div className="avatar avatar--sm">
-        {chat?.avatarUrl ? (
-          <img src={chat.avatarUrl} alt="" />
-        ) : (
-          initials(title)
-        )}
-      </div>
+      <Avatar
+        name={title}
+        jid={jid}
+        avatarUrl={chat?.avatarUrl ?? null}
+        size="sm"
+      />
       <div className="chathdr__info">
         <span className="chathdr__title">{title}</span>
         <span className="chathdr__status">{subtitle}</span>
+      </div>
+      <div className="chathdr__actions">
+        <button
+          className="iconbtn"
+          title={muted ? 'Réactiver les notifications' : 'Couper les notifications'}
+          disabled={!chat}
+          onClick={() => muteChat(jid, !muted)}
+        >
+          {muted ? '🔔' : '🔇'}
+        </button>
+        <button
+          className="iconbtn"
+          title={archived ? 'Désarchiver' : 'Archiver'}
+          disabled={!chat}
+          onClick={() => archiveChat(jid, !archived)}
+        >
+          {archived ? '📤' : '🗄'}
+        </button>
       </div>
     </header>
   );

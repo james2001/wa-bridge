@@ -19,4 +19,10 @@ export interface ClientToServerEvents {
 
   // Délie la session WhatsApp (logout) -> nécessitera un nouveau scan.
   'wa:logout': (ack: (res: { ok: boolean }) => void) => void;
+
+  // Archive / désarchive une discussion.
+  'wa:archive': (input: { chatJid: string; archived: boolean }) => void;
+
+  // Coupe / réactive les notifications d'une discussion (mute).
+  'wa:mute': (input: { chatJid: string; muted: boolean }) => void;
 }

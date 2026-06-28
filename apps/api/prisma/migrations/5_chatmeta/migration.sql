@@ -1,0 +1,1 @@
+ALTER TABLE "wa_chats" ADD COLUMN "muted" BOOLEAN NOT NULL DEFAULT false;
