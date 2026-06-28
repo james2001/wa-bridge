@@ -346,7 +346,7 @@ export class WhatsappService
         msg.media ? { rawMessage: rawContent, fileSha256 } : undefined,
       );
       this.attachMediaUrl(msg);
-      const chat = await this.touchChat(msg, u.type === 'notify' && !msg.fromMe);
+      const chat = await this.touchChat(msg);
       this.emit('message', msg);
       if (chat) this.emit('chat-upsert', chat);
     }
@@ -824,7 +824,7 @@ export class WhatsappService
     // les accusés delivered/read suivront via message-receipt.update.
     if (msg.status === WaMessageStatus.PENDING) msg.status = WaMessageStatus.SENT;
     await this.persistMessage(msg);
-    const chat = await this.touchChat(msg, false);
+    const chat = await this.touchChat(msg);
     this.emit('message', msg);
     if (chat) this.emit('chat-upsert', chat);
     return msg;
@@ -886,7 +886,7 @@ export class WhatsappService
     }
 
     this.attachMediaUrl(msg);
-    const chat = await this.touchChat(msg, false);
+    const chat = await this.touchChat(msg);
     this.emit('message', msg);
     if (chat) this.emit('chat-upsert', chat);
     return msg;
@@ -1407,10 +1407,7 @@ export class WhatsappService
     }
   }
 
-  private async touchChat(
-    m: WaMessage,
-    incrementUnread: boolean,
-  ): Promise<WaChat | null> {
+  private async touchChat(m: WaMessage): Promise<WaChat | null> {
     const name = await this.nameFor(m.chatJid);
     const at = new Date(m.timestamp || Date.now());
     const preview = previewOf(m);

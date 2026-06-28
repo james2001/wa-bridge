@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# Annule un run précédent encore en cours sur la même réf.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ESLint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # --ignore-scripts : on saute prisma generate / builds natifs, inutiles pour le lint.
+      - name: Install (lint toolchain)
+        run: pnpm install --no-frozen-lockfile --ignore-scripts
+      - name: ESLint
+        run: pnpm lint
+
+  build:
+    name: Build & typecheck (Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # .env minimal pour l'interpolation docker-compose (valeurs de build par défaut).
+      - name: Prepare .env
+        run: cp .env.example .env
+      # `docker compose build` compile les 3 images exactement comme en prod :
+      # nest build (tsc) + vite build typechèquent tout le code TypeScript.
+      - name: Build all images
+        run: docker compose build

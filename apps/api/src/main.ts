@@ -32,7 +32,10 @@ async function bootstrap(): Promise<void> {
     }),
   );
 
-  const port = config.get<number>('apiPort') ?? Number(process.env.API_PORT) ?? 3000;
+  const envPort = Number(process.env.API_PORT);
+  const port =
+    config.get<number>('apiPort') ??
+    (Number.isFinite(envPort) ? envPort : 3000);
   await app.listen(port, '0.0.0.0');
 }
 

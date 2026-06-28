@@ -1,5 +1,8 @@
 # wa-bridge — pont WhatsApp Web auto-hébergé
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-339933.svg?logo=node.js&logoColor=white)](package.json)
+
 Un client web **branché sur ton vrai compte WhatsApp** (comme `web.whatsapp.com`),
 auto-hébergé et dockerisé. Tu lies ton téléphone par **QR code** et tu accèdes à tes
 discussions depuis le web, où que tu sois.
