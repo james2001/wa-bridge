@@ -1,15 +1,22 @@
 import {
+  BadRequestException,
+  Body,
   Controller,
   Get,
   Param,
+  Post,
   Query,
   Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import type {
   WaChatsResponse,
   WaConnection,
+  WaMessage,
   WaMessagesPage,
 } from '@app/shared-types';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -40,6 +47,21 @@ export class WhatsappController {
     const lim = Math.min(Math.max(Number(limit) || 50, 1), 100);
     const bef = before ? Number(before) : null;
     return this.wa.listMessages(jid, bef, lim);
+  }
+
+  // Envoi d'un média (image/vidéo/audio/document) depuis le pont vers WhatsApp.
+  // jid encodé côté client (encodeURIComponent) ; Express le décode en param.
+  @Post('chats/:jid/media')
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 80 * 1024 * 1024 } }),
+  )
+  async sendMedia(
+    @Param('jid') jid: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body('caption') caption?: string,
+  ): Promise<WaMessage> {
+    if (!file) throw new BadRequestException('Fichier manquant');
+    return this.wa.sendMedia(jid, file, caption);
   }
 
   // Média déchiffré à la demande (cache disque). Auth via header Bearer OU ?t=.

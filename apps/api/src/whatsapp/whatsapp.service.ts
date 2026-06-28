@@ -720,6 +720,68 @@ export class WhatsappService
     return msg;
   }
 
+  // Envoi d'un média (image/vidéo/audio/document) depuis le pont vers WhatsApp.
+  async sendMedia(
+    chatJid: string,
+    file: { buffer: Buffer; mimetype: string; originalname: string },
+    caption?: string,
+  ): Promise<WaMessage> {
+    if (!this.sock || this.connection.state !== ConnectionState.OPEN) {
+      throw new Error('WhatsApp non connecté');
+    }
+    const target = (await this.resolvePn(chatJid)) ?? chatJid;
+
+    // Contenu Baileys selon le type MIME du fichier uploadé.
+    const mime = file.mimetype || 'application/octet-stream';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let content: any;
+    if (mime.startsWith('image/')) {
+      content = { image: file.buffer, caption: caption || undefined };
+    } else if (mime.startsWith('video/')) {
+      content = { video: file.buffer, caption: caption || undefined };
+    } else if (mime.startsWith('audio/')) {
+      content = { audio: file.buffer, mimetype: mime, ptt: false };
+    } else {
+      content = {
+        document: file.buffer,
+        fileName: file.originalname,
+        mimetype: mime,
+        caption: caption || undefined,
+      };
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sent = await this.sock.sendMessage(target, content as any);
+    const msg = sent ? mapWaMessage(sent, this.sock.user?.id) : null;
+    if (!msg) throw new Error("Échec de l'envoi du média");
+    msg.chatJid = this.canonicalJid(msg.chatJid) ?? msg.chatJid;
+    msg.senderJid = this.canonicalJid(msg.senderJid);
+
+    // Message brut + SHA-256 du fichier (réutilise l'extraction média existante).
+    const { rawContent, fileSha256 } = this.mediaInfoOf(sent?.message);
+
+    // L'envoi a réussi côté serveur WhatsApp -> au moins "envoyé" (✓).
+    if (msg.status === WaMessageStatus.PENDING) msg.status = WaMessageStatus.SENT;
+    await this.persistMessage(msg, { rawMessage: rawContent, fileSha256 });
+
+    // Écrit le buffer dans le cache média (même nom de fichier que getMedia)
+    // pour un affichage immédiat sans re-télécharger. Ne doit pas faire échouer
+    // l'envoi si le cache échoue.
+    try {
+      const safe = msg.id.replace(/[^a-zA-Z0-9]/g, '_');
+      await mkdir(this.mediaDir, { recursive: true });
+      await writeFile(join(this.mediaDir, safe), file.buffer);
+    } catch (e) {
+      this.logger.warn(`sendMedia cache ${msg.id}: ${e}`);
+    }
+
+    this.attachMediaUrl(msg);
+    const chat = await this.touchChat(msg, false);
+    this.emit('message', msg);
+    if (chat) this.emit('chat-upsert', chat);
+    return msg;
+  }
+
   async markRead(chatJid: string): Promise<void> {
     if (!this.sock) return;
     // Canonicalise vers le numéro pour le stockage local.
