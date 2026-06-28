@@ -1,5 +1,6 @@
 # wa-bridge — pont WhatsApp Web auto-hébergé
 
+[![CI](https://github.com/james2001/wa-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/james2001/wa-bridge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-339933.svg?logo=node.js&logoColor=white)](package.json)
 

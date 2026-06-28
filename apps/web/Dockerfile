@@ -5,10 +5,13 @@ WORKDIR /app
 
 # --- deps ---
 FROM base AS deps
-COPY pnpm-workspace.yaml package.json tsconfig.base.json ./
+# Tous les package.json + lockfile : requis pour valider --frozen-lockfile sur le
+# workspace ; --filter n'installe QUE les deps du front (pas Baileys/natif côté API).
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.base.json ./
 COPY packages/shared-types/package.json packages/shared-types/
+COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
-RUN pnpm install --no-frozen-lockfile
+RUN pnpm install --frozen-lockfile --filter @app/web --filter @app/shared-types
 
 # --- build: compile shared-types puis build statique Vite ---
 FROM deps AS build

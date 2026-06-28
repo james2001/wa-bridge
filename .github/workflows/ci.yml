@@ -24,7 +24,7 @@ jobs:
           node-version: 22
       # --ignore-scripts : on saute prisma generate / builds natifs, inutiles pour le lint.
       - name: Install (lint toolchain)
-        run: pnpm install --no-frozen-lockfile --ignore-scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
       - name: ESLint
         run: pnpm lint
 
