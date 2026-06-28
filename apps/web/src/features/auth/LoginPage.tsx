@@ -42,7 +42,7 @@ export default function LoginPage() {
       <div className="login__card">
         <div className="login__brand">
           <div className="login__logo">W</div>
-          <h1>whatapp</h1>
+          <h1>wa-bridge</h1>
         </div>
 
         <form onSubmit={onSubmit} className="login__form">

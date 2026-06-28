@@ -7,7 +7,7 @@ function EmptyChat() {
   return (
     <div className="empty">
       <div className="empty__logo">W</div>
-      <h2>whatapp</h2>
+      <h2>wa-bridge</h2>
       <p>Sélectionnez une discussion pour commencer à discuter.</p>
     </div>
   );

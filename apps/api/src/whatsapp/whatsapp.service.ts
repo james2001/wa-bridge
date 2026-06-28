@@ -177,7 +177,7 @@ export class WhatsappService
         printQRInTerminal: false,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         logger: this.waLogger as any,
-        browser: ['Whatapp Self-Hosted', 'Chrome', '1.0.0'],
+        browser: ['wa-bridge', 'Chrome', '1.0.0'],
         syncFullHistory: true,
         markOnlineOnConnect: false,
         getMessage: async () => undefined,

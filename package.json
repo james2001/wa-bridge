@@ -1,8 +1,9 @@
 {
-  "name": "whatapp-clone",
+  "name": "wa-bridge",
   "version": "0.0.0",
   "private": true,
-  "description": "Clone auto-hébergé de WhatsApp Web — messagerie temps réel, appels audio/vidéo, partage d'écran (NestJS + React + LiveKit, dockerisé)",
+  "description": "Pont web auto-hébergé vers ton compte WhatsApp (Baileys) — messagerie temps réel : texte, médias, accusés, réactions, groupes, archivage. NestJS + React, dockerisé.",
+  "license": "MIT",
   "packageManager": "pnpm@9.15.0",
   "engines": {
     "node": ">=22"
