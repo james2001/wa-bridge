@@ -7,7 +7,7 @@ interface Props {
   name: string;
   jid: string;
   avatarUrl: string | null;
-  size?: 'sm' | 'md';
+  size?: 'sm' | 'md' | 'lg';
 }
 
 // Avatar avec photo de profil et repli sur les initiales.
@@ -22,7 +22,9 @@ export default function Avatar({ name, jid, avatarUrl, size = 'md' }: Props) {
     setFailed(false);
   }, [avatarUrl, jid]);
 
-  const className = 'avatar' + (size === 'sm' ? ' avatar--sm' : '');
+  const className =
+    'avatar' +
+    (size === 'sm' ? ' avatar--sm' : size === 'lg' ? ' avatar--lg' : '');
   const showImage = Boolean(avatarUrl) && !failed;
   const src =
     avatarUrl && token

@@ -1,7 +1,11 @@
 import { useAppSelector } from './hooks';
 import ChatList from '../features/chats/ChatList';
 import ChatView from '../features/chats/ChatView';
-import { selectSelectedChatJid } from '../features/ui/uiSlice';
+import ContactInfoPanel from '../features/chats/ContactInfoPanel';
+import {
+  selectSelectedChatJid,
+  selectInfoPanelOpen,
+} from '../features/ui/uiSlice';
 
 function EmptyChat() {
   return (
@@ -15,9 +19,17 @@ function EmptyChat() {
 
 export default function AppLayout() {
   const selectedJid = useAppSelector(selectSelectedChatJid);
+  const infoOpen = useAppSelector(selectInfoPanelOpen);
+  const showInfo = Boolean(selectedJid) && infoOpen;
 
   return (
-    <div className={'layout' + (selectedJid ? ' layout--chat-open' : '')}>
+    <div
+      className={
+        'layout' +
+        (selectedJid ? ' layout--chat-open' : '') +
+        (showInfo ? ' layout--info-open' : '')
+      }
+    >
       <ChatList />
       <main className="layout__main">
         {selectedJid ? (
@@ -26,6 +38,7 @@ export default function AppLayout() {
           <EmptyChat />
         )}
       </main>
+      {showInfo && selectedJid && <ContactInfoPanel jid={selectedJid} />}
     </div>
   );
 }

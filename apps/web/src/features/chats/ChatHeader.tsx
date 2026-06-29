@@ -3,7 +3,7 @@ import type { WaChat, WaPresence } from '@app/shared-types';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import Avatar from '../../components/Avatar';
 import { chatTitle, prettyJid } from './utils';
-import { selectChat } from '../ui/uiSlice';
+import { selectChat, toggleInfoPanel } from '../ui/uiSlice';
 import { selectPresence } from '../whatsapp/waSlice';
 import { archiveChat, muteChat } from '../../services/socket';
 
@@ -44,17 +44,31 @@ export default function ChatHeader({ chat, jid }: Props) {
       >
         ‹
       </button>
-      <Avatar
-        name={title}
-        jid={jid}
-        avatarUrl={chat?.avatarUrl ?? null}
-        size="sm"
-      />
-      <div className="chathdr__info">
-        <span className="chathdr__title">{title}</span>
-        <span className="chathdr__status">{subtitle}</span>
-      </div>
+      <button
+        type="button"
+        className="chathdr__id"
+        title="Infos du contact"
+        onClick={() => dispatch(toggleInfoPanel())}
+      >
+        <Avatar
+          name={title}
+          jid={jid}
+          avatarUrl={chat?.avatarUrl ?? null}
+          size="sm"
+        />
+        <div className="chathdr__info">
+          <span className="chathdr__title">{title}</span>
+          <span className="chathdr__status">{subtitle}</span>
+        </div>
+      </button>
       <div className="chathdr__actions">
+        <button
+          className="iconbtn"
+          title="Infos du contact"
+          onClick={() => dispatch(toggleInfoPanel())}
+        >
+          ℹ️
+        </button>
         <button
           className="iconbtn"
           title={muted ? 'Réactiver les notifications' : 'Couper les notifications'}
