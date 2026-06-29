@@ -100,6 +100,11 @@ button {
   height: 36px;
   font-size: 14px;
 }
+.avatar--lg {
+  width: 180px;
+  height: 180px;
+  font-size: 64px;
+}
 
 /* ---------- Splash / Empty ---------- */
 .splash,
@@ -219,6 +224,10 @@ button {
      contenu (sinon la chaîne de hauteurs casse et .msglist ne scrolle pas). */
   grid-template-rows: 100%;
   min-height: 0;
+}
+/* Volet « Infos » ouvert: 3e colonne à droite de la conversation. */
+.layout--info-open {
+  grid-template-columns: minmax(300px, 30%) 1fr min(420px, 35%);
 }
 .layout__main {
   min-width: 0;
@@ -487,6 +496,23 @@ button {
 }
 .chathdr__back {
   display: none;
+}
+/* Zone identité cliquable (avatar + nom) -> ouvre le volet « Infos ». */
+.chathdr__id {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 4px;
+  margin: -4px;
+  border-radius: 8px;
+  text-align: left;
+}
+.chathdr__id:hover {
+  background: rgba(0, 0, 0, 0.04);
 }
 .chathdr__info {
   flex: 1;
@@ -968,9 +994,165 @@ button {
   }
 }
 
+/* ---------- Volet « Infos » (droite) ---------- */
+.infopanel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+}
+.infopanel__header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--header);
+  border-bottom: 1px solid var(--border);
+  min-height: 59px;
+}
+.infopanel__header-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.infopanel__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--bg);
+}
+.infopanel__id {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 28px 24px 24px;
+  background: var(--panel);
+  border-bottom: 8px solid var(--bg);
+}
+.infopanel__avatar {
+  margin-bottom: 10px;
+}
+.infopanel__name {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  text-align: center;
+  word-break: break-word;
+}
+.infopanel__sub {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+.infopanel__media {
+  padding: 16px;
+  background: var(--panel);
+}
+.infopanel__media-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+.infopanel__media-count {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ---------- Galerie média (vignettes carrées) ---------- */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+.gallery__tile {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border: none;
+  padding: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg);
+  cursor: pointer;
+}
+.gallery__tile:disabled {
+  cursor: default;
+}
+.gallery__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.gallery__play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 22px;
+  background: rgba(0, 0, 0, 0.18);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+/* Vidéo sans miniature: tuile sombre avec un gros play (pas de téléchargement). */
+.gallery__tile--video {
+  background: #2a2f32;
+}
+.gallery__play--big {
+  font-size: 30px;
+  background: transparent;
+}
+.gallery__file {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-muted);
+  text-decoration: none;
+}
+a.gallery__file:hover {
+  background: #e5e9eb;
+}
+.gallery__file-icon {
+  font-size: 26px;
+}
+.gallery__file-name {
+  font-size: 11px;
+  text-align: center;
+  word-break: break-word;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.gallery__state {
+  margin: 0;
+  padding: 16px 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
 /* ---------- Responsive (mobile) ---------- */
 @media (max-width: 768px) {
   .layout {
+    grid-template-columns: 1fr;
+  }
+  .layout--info-open {
     grid-template-columns: 1fr;
   }
   .layout__main {
@@ -987,5 +1169,12 @@ button {
   }
   .bubble {
     max-width: 80%;
+  }
+  /* Sur mobile, le volet « Infos » couvre l'écran (hors flux de la grille). */
+  .infopanel {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    border-left: none;
   }
 }

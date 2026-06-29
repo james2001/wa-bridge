@@ -14,6 +14,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import type {
+  WaChatMediaResponse,
   WaChatsResponse,
   WaConnection,
   WaMessage,
@@ -47,6 +48,14 @@ export class WhatsappController {
     const lim = Math.min(Math.max(Number(limit) || 50, 1), 100);
     const bef = before ? Number(before) : null;
     return this.wa.listMessages(jid, bef, lim);
+  }
+
+  // Galerie média d'une discussion (« Médias, liens et documents »), tous les
+  // médias récents d'abord. Coexiste avec le POST de même chemin (envoi média).
+  // jid encodé côté client (encodeURIComponent) ; Express le décode en param.
+  @Get('chats/:jid/media')
+  async chatMedia(@Param('jid') jid: string): Promise<WaChatMediaResponse> {
+    return { items: await this.wa.listChatMedia(jid) };
   }
 
   // Envoi d'un média (image/vidéo/audio/document) depuis le pont vers WhatsApp.

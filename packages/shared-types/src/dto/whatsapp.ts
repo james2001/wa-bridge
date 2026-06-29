@@ -91,6 +91,24 @@ export interface WaMessagesPage {
   nextBefore: number | null; // timestamp à passer pour la page suivante
 }
 
+// Un élément média d'une discussion (galerie « Médias, liens et documents »).
+export interface WaMediaItem {
+  id: string; // id du message
+  kind: 'image' | 'video' | 'audio' | 'document' | 'sticker';
+  mimetype: string | null;
+  fileName: string | null;
+  caption: string | null;
+  url: string | null; // /api/wa/media/<chatJid>/<id> (servi par le backend, token ?t=)
+  thumbnailBase64: string | null;
+  timestamp: number; // epoch ms
+  fromMe: boolean;
+}
+
+// GET /api/wa/chats/:jid/media -> tous les médias d'une discussion (récents d'abord).
+export interface WaChatMediaResponse {
+  items: WaMediaItem[];
+}
+
 // Présence d'un contact.
 export interface WaPresence {
   jid: string;

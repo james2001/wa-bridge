@@ -3,7 +3,7 @@ import type { WaChat, WaPresence } from '@app/shared-types';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import Avatar from '../../components/Avatar';
 import { chatTitle, prettyJid } from './utils';
-import { selectChat } from '../ui/uiSlice';
+import { selectChat, toggleInfoPanel, selectInfoPanelOpen } from '../ui/uiSlice';
 import { selectPresence } from '../whatsapp/waSlice';
 import { archiveChat, muteChat } from '../../services/socket';
 
@@ -29,6 +29,7 @@ function presenceText(p: WaPresence | undefined): string | null {
 export default function ChatHeader({ chat, jid }: Props) {
   const dispatch = useAppDispatch();
   const presence = useAppSelector(selectPresence(jid));
+  const infoOpen = useAppSelector(selectInfoPanelOpen);
   const title = chat ? chatTitle(chat) : prettyJid(jid);
   const subtitle = presenceText(presence) ?? prettyJid(jid);
 
@@ -44,17 +45,35 @@ export default function ChatHeader({ chat, jid }: Props) {
       >
         ‹
       </button>
-      <Avatar
-        name={title}
-        jid={jid}
-        avatarUrl={chat?.avatarUrl ?? null}
-        size="sm"
-      />
-      <div className="chathdr__info">
-        <span className="chathdr__title">{title}</span>
-        <span className="chathdr__status">{subtitle}</span>
-      </div>
+      <button
+        type="button"
+        className="chathdr__id"
+        title="Infos du contact"
+        aria-expanded={infoOpen}
+        aria-controls="info-panel"
+        onClick={() => dispatch(toggleInfoPanel())}
+      >
+        <Avatar
+          name={title}
+          jid={jid}
+          avatarUrl={chat?.avatarUrl ?? null}
+          size="sm"
+        />
+        <div className="chathdr__info">
+          <span className="chathdr__title">{title}</span>
+          <span className="chathdr__status">{subtitle}</span>
+        </div>
+      </button>
       <div className="chathdr__actions">
+        <button
+          className="iconbtn"
+          title="Infos du contact"
+          aria-expanded={infoOpen}
+          aria-controls="info-panel"
+          onClick={() => dispatch(toggleInfoPanel())}
+        >
+          ℹ️
+        </button>
         <button
           className="iconbtn"
           title={muted ? 'Réactiver les notifications' : 'Couper les notifications'}

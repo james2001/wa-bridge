@@ -1,5 +1,10 @@
 import { api } from '../../app/api';
-import type { WaChat, WaChatsResponse } from '@app/shared-types';
+import type {
+  WaChat,
+  WaChatsResponse,
+  WaChatMediaResponse,
+  WaMediaItem,
+} from '@app/shared-types';
 
 export const chatsApi = api.injectEndpoints({
   endpoints: (builder) => ({
@@ -8,10 +13,16 @@ export const chatsApi = api.injectEndpoints({
       transformResponse: (response: WaChatsResponse) => response.chats,
       providesTags: ['WaChats'],
     }),
+    // Galerie « Médias, liens et documents » d'une discussion (récents d'abord).
+    // Clé de cache = jid ; partagée entre le panneau d'infos et la galerie.
+    getChatMedia: builder.query<WaMediaItem[], string>({
+      query: (jid) => ({ url: `/wa/chats/${encodeURIComponent(jid)}/media` }),
+      transformResponse: (response: WaChatMediaResponse) => response.items,
+    }),
   }),
 });
 
-export const { useGetChatsQuery } = chatsApi;
+export const { useGetChatsQuery, useGetChatMediaQuery } = chatsApi;
 
 // Remplace tout le cache de la liste (sync initiale 'wa:chats').
 export function setChats(chats: WaChat[]) {

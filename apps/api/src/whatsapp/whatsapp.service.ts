@@ -37,8 +37,10 @@ import {
   ConnectionState,
   PresenceKind,
   WaMessageStatus,
+  WaMessageType,
   type WaChat,
   type WaConnection,
+  type WaMediaItem,
   type WaMessage,
   type WaPresence,
   type WaReaction,
@@ -130,6 +132,16 @@ export class WhatsappService
   private static readonly AVATAR_TIMEOUT_MS = 10000;
   // Borne sur les mutations app-state (mute/archive) qui peuvent ne pas répondre.
   private static readonly CHATMODIFY_TIMEOUT_MS = 8000;
+  // Types de message porteurs d'un média (galerie « Médias, liens et documents »).
+  private static readonly MEDIA_TYPES: readonly WaMessageType[] = [
+    WaMessageType.IMAGE,
+    WaMessageType.VIDEO,
+    WaMessageType.AUDIO,
+    WaMessageType.DOCUMENT,
+    WaMessageType.STICKER,
+  ];
+  // Plafond de la galerie média (récents d'abord) — borne la requête/réponse.
+  private static readonly MEDIA_GALLERY_LIMIT = 200;
 
   constructor(
     private readonly config: ConfigService,
@@ -1453,6 +1465,54 @@ export class WhatsappService
       hasMore,
       nextBefore: hasMore ? page[0]?.sentAt.getTime() ?? null : null,
     };
+  }
+
+  // Galerie média d'une discussion: TOUS les médias, récents d'abord. On
+  // canonicalise le JID (numéro) comme les autres méthodes, on filtre les
+  // messages porteurs d'un média, puis on réutilise msgRowToDto (qui pose
+  // media + l'url via attachMediaUrl) avant de projeter sur WaMediaItem. Les
+  // lignes sans média réel (ex: message supprimé) sont ignorées.
+  async listChatMedia(chatJid: string): Promise<WaMediaItem[]> {
+    const jid = (await this.resolvePn(chatJid)) ?? chatJid;
+    const rows = await this.prisma.waMessage.findMany({
+      where: { chatJid: jid, type: { in: [...WhatsappService.MEDIA_TYPES] } },
+      orderBy: { sentAt: 'desc' },
+      // Borné + `select` SANS rawMessage (gros blob proto inutile pour la galerie).
+      take: WhatsappService.MEDIA_GALLERY_LIMIT,
+      select: {
+        id: true,
+        chatJid: true,
+        fromMe: true,
+        senderJid: true,
+        senderName: true,
+        type: true,
+        text: true,
+        sentAt: true,
+        status: true,
+        quotedId: true,
+        media: true,
+        reactions: true,
+        clientId: true,
+      },
+    });
+    const items: WaMediaItem[] = [];
+    for (const row of rows) {
+      const dto = this.msgRowToDto(row);
+      const media = dto.media;
+      if (!media) continue; // pas de média réel -> ignoré
+      items.push({
+        id: dto.id,
+        kind: media.kind,
+        mimetype: media.mimetype,
+        fileName: media.fileName,
+        caption: media.caption,
+        url: media.url,
+        thumbnailBase64: media.thumbnailBase64,
+        timestamp: dto.timestamp,
+        fromMe: dto.fromMe,
+      });
+    }
+    return items;
   }
 
   // --- Persistance / helpers ---
