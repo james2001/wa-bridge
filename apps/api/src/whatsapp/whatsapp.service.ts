@@ -51,6 +51,14 @@ import { mapWaMessage, previewOf } from './whatsapp.mapper';
 // (~1.7e12). Sous ce seuil, muteEndTime est une durée => discussion muette.
 const EPOCH_FLOOR_MS = 1_000_000_000_000; // 2001-09-09 en ms
 
+// Renvoie une chaîne non vide nettoyée, ou null. WhatsApp livre souvent ''
+// (chaîne vide) pour un nom absent : avec `??` la chaîne vide passerait à
+// travers et serait stockée/affichée comme un nom (=> repli sur le JID brut).
+const cleanName = (s: unknown): string | null => {
+  const t = typeof s === 'string' ? s.trim() : '';
+  return t.length > 0 ? t : null;
+};
+
 // Événements domaine émis par le service (consommés par la gateway).
 export interface WhatsappEvents {
   connection: (conn: WaConnection) => void;
@@ -93,6 +101,10 @@ export class WhatsappService
   private lidToPn = new Map<string, string>();
   // Vrai pendant une synchro d'historique: évite un flot d'emit 'chats'.
   private historySyncing = false;
+  // Garde + throttle du backfill des sujets de groupe (évite le rejeu à chaque
+  // reconnexion d'une session qui clignote).
+  private groupBackfillRunning = false;
+  private groupBackfillAt = 0;
 
   // --- Limitation des requêtes de photos de profil ---
   // Le front peut demander ~200 avatars d'un coup (liste). On NE DOIT PAS
@@ -225,6 +237,17 @@ export class WhatsappService
           this.logger.error(`contacts.upsert: ${e}`),
         );
       });
+      // Sujets de groupe (création / renommage) -> nom de la discussion.
+      sock.ev.on('groups.upsert', (groups) => {
+        void this.onGroupsUpsert(groups).catch((e) =>
+          this.logger.error(`groups.upsert: ${e}`),
+        );
+      });
+      sock.ev.on('groups.update', (updates) => {
+        void this.onGroupsUpsert(updates).catch((e) =>
+          this.logger.error(`groups.update: ${e}`),
+        );
+      });
       // Présence entrante ("en ligne" / "en train d'écrire").
       sock.ev.on('presence.update', (u) => {
         void this.onPresence(u).catch((e) =>
@@ -255,6 +278,7 @@ export class WhatsappService
           : null,
       });
       this.logger.log('WhatsApp connecté');
+      void this.backfillGroupSubjects();
     }
 
     if (connection === 'close') {
@@ -557,21 +581,10 @@ export class WhatsappService
   // Types Baileys volatils selon la version -> on borne le typage à la frontière.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async onHistorySet(h: any): Promise<void> {
-    // Contacts
+    // Contacts: name = carnet d'adresses (ce que TU as enregistré), pushName =
+    // ce que le contact s'est donné. On découple strictement (cf. onContactsUpsert).
     for (const c of h.contacts ?? []) {
-      const name = c.name ?? c.notify ?? null;
-      await this.prisma.waContact
-        .upsert({
-          where: { jid: c.id },
-          create: {
-            jid: c.id,
-            name,
-            pushName: c.notify ?? null,
-            isGroup: isJidGroup(c.id) ?? false,
-          },
-          update: { name: name ?? undefined, pushName: c.notify ?? undefined },
-        })
-        .catch(() => undefined);
+      await this.upsertContact(c);
     }
 
     // Chats
@@ -586,7 +599,7 @@ export class WhatsappService
           : new Date(
               (typeof ts === 'number' ? ts : ts.toNumber()) * 1000,
             );
-      const name = ch.name ?? (await this.nameFor(jid));
+      const name = await this.chatDisplayName(jid, ch.name);
       // Archive/mute portés par l'historique (app-state) — sinon on les perdait.
       const meta = this.chatMetaOf(ch);
       await this.prisma.waChat
@@ -696,7 +709,7 @@ export class WhatsappService
   private async onChatsUpsert(chats: any[]): Promise<void> {
     for (const ch of chats) {
       if (this.isIgnoredChat(ch.id)) continue;
-      const name = ch.name ?? (await this.nameFor(ch.id));
+      const name = await this.chatDisplayName(ch.id, ch.name);
       const meta = this.chatMetaOf(ch);
       const row = await this.prisma.waChat
         .upsert({
@@ -741,7 +754,7 @@ export class WhatsappService
         continue;
       }
       const jid = (await this.resolvePn(ch.id)) ?? ch.id;
-      const name: string | undefined = ch.name ?? undefined;
+      const subject = cleanName(ch.name);
       // Si on vient de poser archive/mute localement, ignorer l'écho WhatsApp
       // (sinon il réécrase notre état avec une valeur parfois incohérente).
       if (meta.archived !== undefined && this.isMetaGuarded(jid, 'archived')) {
@@ -752,19 +765,20 @@ export class WhatsappService
       }
       if (
         !hasUnread &&
-        !name &&
+        !subject &&
         meta.archived === undefined &&
         meta.muted === undefined
       ) {
         continue; // plus rien à écrire après suppression de l'écho gardé
       }
       const unread = hasUnread ? Math.max(0, ch.unreadCount as number) : undefined;
+      const name = await this.chatDisplayName(jid, ch.name);
       const row = await this.prisma.waChat
         .upsert({
           where: { jid },
           create: {
             jid,
-            name: name ?? (await this.nameFor(jid)),
+            name,
             isGroup: isJidGroup(jid) ?? false,
             unreadCount: unread ?? 0,
             ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
@@ -772,7 +786,7 @@ export class WhatsappService
           },
           update: {
             ...(unread !== undefined ? { unreadCount: unread } : {}),
-            ...(name ? { name } : {}),
+            ...(subject ? { name } : {}),
             ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
             ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
           },
@@ -785,20 +799,147 @@ export class WhatsappService
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async onContactsUpsert(contacts: any[]): Promise<void> {
     for (const c of contacts) {
-      const name = c.name ?? c.notify ?? null;
-      await this.prisma.waContact
-        .upsert({
-          where: { jid: c.id },
-          create: {
-            jid: c.id,
-            name,
-            pushName: c.notify ?? null,
-            isGroup: isJidGroup(c.id) ?? false,
-          },
-          update: { name: name ?? undefined, pushName: c.notify ?? undefined },
-        })
-        .catch(() => undefined);
+      await this.upsertContact(c);
     }
+  }
+
+  // Découple STRICTEMENT les deux noms: `name` = carnet d'adresses (c.name),
+  // `pushName` = ce que le contact s'est donné (c.notify). On n'écrit jamais
+  // l'un depuis l'autre, sinon un contacts.upsert "notify seul" écraserait le
+  // nom du carnet par le pushName (les `undefined` ne touchent pas la colonne).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async upsertContact(c: any): Promise<void> {
+    if (!c?.id) return;
+    const carnet = cleanName(c.name);
+    const push = cleanName(c.notify);
+    await this.prisma.waContact
+      .upsert({
+        where: { jid: c.id },
+        create: {
+          jid: c.id,
+          name: carnet,
+          pushName: push,
+          isGroup: isJidGroup(c.id) ?? false,
+        },
+        update: {
+          ...(carnet ? { name: carnet } : {}),
+          ...(push ? { pushName: push } : {}),
+        },
+      })
+      .catch(() => undefined);
+  }
+
+  // Sujet d'un/plusieurs groupes (création / renommage) -> nom de la discussion.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async onGroupsUpsert(groups: any[]): Promise<void> {
+    for (const g of groups) {
+      const subject = cleanName(g?.subject);
+      if (!g?.id || !subject || this.isIgnoredChat(g.id)) continue;
+      // upsert (pas update): un groupe tout neuf (création/jonction) n'a pas
+      // encore de ligne de discussion -> il faut la créer, pas la rater.
+      const row = await this.prisma.waChat
+        .upsert({
+          where: { jid: g.id },
+          create: {
+            jid: g.id,
+            name: subject,
+            isGroup: isJidGroup(g.id) ?? true,
+            unreadCount: 0,
+          },
+          update: { name: subject },
+        })
+        .catch(() => null);
+      if (row) this.emit('chat-upsert', this.chatRowToDto(row));
+    }
+  }
+
+  // Récupère le sujet de TOUS les groupes participés (1 requête) et renseigne le
+  // nom des discussions de groupe (les événements de chat ne portent pas
+  // toujours le sujet -> sinon affichage du JID brut). Une fois par ouverture.
+  private async backfillGroupSubjects(): Promise<void> {
+    if (!this.sock || this.connection.state !== ConnectionState.OPEN) return;
+    // Garde anti-concurrence + throttle (pas de rejeu sur reconnexions rapprochées).
+    if (this.groupBackfillRunning || Date.now() - this.groupBackfillAt < 30_000) {
+      return;
+    }
+    this.groupBackfillRunning = true;
+    this.groupBackfillAt = Date.now();
+    try {
+      const all = await this.withTimeout(
+        this.sock.groupFetchAllParticipating(),
+        WhatsappService.CHATMODIFY_TIMEOUT_MS,
+      );
+      // État courant des groupes (1 requête) -> on n'écrit/émet que sur changement.
+      const existing = await this.prisma.waChat
+        .findMany({ where: { isGroup: true }, select: { jid: true, name: true } })
+        .catch(() => [] as { jid: string; name: string | null }[]);
+      const current = new Map(existing.map((r) => [r.jid, r.name]));
+      let fixed = 0;
+      for (const [jid, meta] of Object.entries(all ?? {})) {
+        if (!current.has(jid)) continue; // pas (encore) une discussion -> onGroupsUpsert/messages s'en chargent
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const display =
+          cleanName((meta as any)?.subject) ??
+          (await this.groupNameFromParticipants(meta));
+        if (!display || current.get(jid) === display) continue; // inchangé
+        const row = await this.prisma.waChat
+          .update({ where: { jid }, data: { name: display } })
+          .catch(() => null);
+        if (row) {
+          fixed++;
+          this.emit('chat-upsert', this.chatRowToDto(row));
+        }
+      }
+      if (fixed > 0) {
+        this.logger.log(`Sujets de groupe synchronisés (${fixed} discussion(s))`);
+      }
+    } catch (e) {
+      this.logger.warn(`backfillGroupSubjects: ${e}`);
+    } finally {
+      this.groupBackfillRunning = false;
+    }
+  }
+
+  // Groupe SANS sujet -> nom à la WhatsApp: noms des participants (hors soi),
+  // les 3 premiers puis "+N". Repli sur le numéro si le nom est inconnu.
+  private async groupNameFromParticipants(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meta: any,
+  ): Promise<string | null> {
+    const parts: unknown[] = Array.isArray(meta?.participants)
+      ? meta.participants
+      : [];
+    if (!parts.length) return null;
+    // Identités de soi (numéro normalisé/canonique + LID) pour s'exclure de
+    // façon fiable, les participants étant souvent adressés en @lid.
+    const u = this.sock?.user;
+    const selfSet = new Set<string>();
+    if (u?.id) {
+      selfSet.add(jidNormalizedUser(u.id));
+      const c = this.canonicalJid(u.id);
+      if (c) selfSet.add(c);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const selfLid = (u as any)?.lid;
+    if (typeof selfLid === 'string') selfSet.add(jidNormalizedUser(selfLid));
+    const others = parts.filter((p) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const j = this.canonicalJid((p as any)?.id);
+      return !!j && !selfSet.has(j);
+    });
+    const names: string[] = [];
+    for (const p of others.slice(0, 3)) {
+      // resolvePn() résout activement le LID -> numéro (API native) ; on tombe
+      // ensuite sur le nom du carnet, sinon le numéro (plutôt qu'un LID brut).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const jid = (await this.resolvePn((p as any)?.id)) ?? this.canonicalJid((p as any)?.id);
+      if (!jid) continue;
+      const n = (await this.nameFor(jid)) ?? jid.split('@')[0].split(':')[0];
+      if (n) names.push(n);
+    }
+    if (!names.length) return null;
+    const extra = others.length - names.length;
+    return extra > 0 ? `${names.join(', ')} +${extra}` : names.join(', ');
   }
 
   // --- Envoi / actions ---
@@ -1056,23 +1197,38 @@ export class WhatsappService
     jid: string,
     filePath: string,
   ): Promise<{ buffer: Buffer; mimetype: string }> {
+    // Connexion fermée = échec TRANSITOIRE: ne JAMAIS persister "pas de photo"
+    // (sinon un avatar valide reste introuvable 24 h après une reconnexion).
+    const sock = this.sock;
+    if (!sock || this.connection.state !== ConnectionState.OPEN) {
+      this.markTransientNoAvatar(jid);
+      throw new NotFoundException('WhatsApp non connecté');
+    }
     const release = await this.acquireAvatarSlot();
     try {
-      const url = await this.withTimeout(
-        this.sock?.profilePictureUrl(jid, 'image') ?? Promise.resolve(null),
-        WhatsappService.AVATAR_TIMEOUT_MS,
-      ).catch(() => null);
+      let url: string | null | undefined;
+      try {
+        url = await this.profilePicUrl(sock, jid);
+      } catch (e) {
+        // 404 / photo privée = vraiment pas de photo (cache négatif long).
+        // Timeout / connexion / autre = transitoire (réessai, pas de marqueur).
+        if (this.isNoProfilePicError(e)) this.markNoAvatar(jid, filePath);
+        else this.markTransientNoAvatar(jid);
+        throw new NotFoundException('Pas de photo de profil');
+      }
       if (!url) {
+        // Réponse sans URL = pas de photo de profil.
         this.markNoAvatar(jid, filePath);
         throw new NotFoundException('Pas de photo de profil');
       }
+      // URL obtenue (une photo EXISTE) ; échec de téléchargement = transitoire.
       const res = await this.withTimeout(
         fetch(url),
         WhatsappService.AVATAR_TIMEOUT_MS,
-      );
-      if (!res.ok) {
-        this.markNoAvatar(jid, filePath);
-        throw new NotFoundException('Pas de photo de profil');
+      ).catch(() => null);
+      if (!res || !res.ok) {
+        this.markTransientNoAvatar(jid);
+        throw new NotFoundException('Photo indisponible (transitoire)');
       }
       const buf = Buffer.from(await res.arrayBuffer());
       await writeFile(filePath, buf).catch(() => undefined);
@@ -1084,20 +1240,61 @@ export class WhatsappService
         mimetype: res.headers.get('content-type') ?? 'image/jpeg',
       };
     } catch (e) {
+      // Erreur résiduelle inattendue (lecture du flux…) -> transitoire (pas 500).
       if (e instanceof NotFoundException) throw e;
-      this.markNoAvatar(jid, filePath);
+      this.markTransientNoAvatar(jid);
       this.logger.warn(`getAvatar ${jid}: ${e}`);
-      throw new NotFoundException('Pas de photo de profil');
+      throw new NotFoundException('Photo indisponible (transitoire)');
     } finally {
       release();
     }
   }
 
-  // Mémorise (mémoire + marqueur disque) qu'un jid n'a pas de photo.
+  // Tente la photo pleine ('image') puis, sur échec NON-définitif, la miniature
+  // ('preview'): une requête 'image' qui traîne répond souvent en 'preview'.
+  private async profilePicUrl(
+    sock: WASocket,
+    jid: string,
+  ): Promise<string | undefined> {
+    try {
+      return await this.withTimeout(
+        sock.profilePictureUrl(jid, 'image'),
+        WhatsappService.AVATAR_TIMEOUT_MS,
+      );
+    } catch (e) {
+      if (this.isNoProfilePicError(e)) throw e; // vraie absence -> propage
+      return await this.withTimeout(
+        sock.profilePictureUrl(jid, 'preview'),
+        WhatsappService.AVATAR_TIMEOUT_MS,
+      );
+    }
+  }
+
+  // Mémorise (mémoire + marqueur disque, TTL long) qu'un jid n'a PAS de photo.
   private markNoAvatar(jid: string, filePath: string): void {
     this.avatarNoPhoto.set(jid, Date.now() + WhatsappService.AVATAR_NEG_TTL_MS);
     // Marqueur disque vide: la fraîcheur est lue via le mtime du fichier.
     writeFile(filePath + '.none', '').catch(() => undefined);
+  }
+
+  // Échec TRANSITOIRE (déconnexion / timeout / CDN): on évite seulement le
+  // martèlement ~1 min, SANS marqueur disque ni TTL long -> réessai auto ensuite.
+  private markTransientNoAvatar(jid: string): void {
+    this.avatarNoPhoto.set(jid, Date.now() + 60_000);
+  }
+
+  // Vrai si l'erreur signifie "pas de photo" (404) ou photo privée (401/403).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private isNoProfilePicError(e: any): boolean {
+    const code = e?.output?.statusCode ?? e?.data?.statusCode ?? e?.statusCode;
+    const msg = String(e?.message ?? '').toLowerCase();
+    return (
+      code === 404 ||
+      code === 401 ||
+      code === 403 ||
+      msg.includes('item-not-found') ||
+      msg.includes('not-authorized')
+    );
   }
 
   // Sémaphore: limite le nombre de requêtes simultanées de photo sur la socket.
@@ -1440,7 +1637,20 @@ export class WhatsappService
     const c = await this.prisma.waContact
       .findUnique({ where: { jid } })
       .catch(() => null);
-    return c?.name ?? c?.pushName ?? null;
+    // Carnet d'adresses (name) d'abord, pushName en repli.
+    return cleanName(c?.name) ?? cleanName(c?.pushName) ?? null;
+  }
+
+  // Nom à afficher pour une discussion. Groupe -> sujet (ch.name de Baileys).
+  // 1:1 -> on PRÉFÈRE le carnet d'adresses (nameFor) au ch.name de Baileys, qui
+  // peut être un pushName et masquerait le nom que tu as enregistré.
+  private async chatDisplayName(
+    jid: string,
+    rawChatName: unknown,
+  ): Promise<string | null> {
+    const subject = cleanName(rawChatName);
+    if (isJidGroup(jid)) return subject;
+    return (await this.nameFor(jid)) ?? subject;
   }
 
   // --- LID / canonicalisation ---
