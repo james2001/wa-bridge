@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useAppDispatch } from '../../app/hooks';
 import Avatar from '../../components/Avatar';
 import MediaGallery from './MediaGallery';
@@ -23,8 +24,20 @@ export default function ContactInfoPanel({ jid }: Props) {
   const subtitle = isGroup ? 'Groupe' : prettyJid(jid);
   const mediaCount = media?.length ?? 0;
 
+  // Échap ferme le panneau — sauf si une lightbox est ouverte (qui gère son
+  // propre Échap), pour ne pas fermer les deux d'un coup.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !document.querySelector('.lightbox')) {
+        dispatch(closeInfoPanel());
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [dispatch]);
+
   return (
-    <aside className="infopanel">
+    <aside className="infopanel" id="info-panel">
       <header className="infopanel__header">
         <button
           type="button"

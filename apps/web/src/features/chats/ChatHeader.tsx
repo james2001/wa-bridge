@@ -3,7 +3,7 @@ import type { WaChat, WaPresence } from '@app/shared-types';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import Avatar from '../../components/Avatar';
 import { chatTitle, prettyJid } from './utils';
-import { selectChat, toggleInfoPanel } from '../ui/uiSlice';
+import { selectChat, toggleInfoPanel, selectInfoPanelOpen } from '../ui/uiSlice';
 import { selectPresence } from '../whatsapp/waSlice';
 import { archiveChat, muteChat } from '../../services/socket';
 
@@ -29,6 +29,7 @@ function presenceText(p: WaPresence | undefined): string | null {
 export default function ChatHeader({ chat, jid }: Props) {
   const dispatch = useAppDispatch();
   const presence = useAppSelector(selectPresence(jid));
+  const infoOpen = useAppSelector(selectInfoPanelOpen);
   const title = chat ? chatTitle(chat) : prettyJid(jid);
   const subtitle = presenceText(presence) ?? prettyJid(jid);
 
@@ -48,6 +49,8 @@ export default function ChatHeader({ chat, jid }: Props) {
         type="button"
         className="chathdr__id"
         title="Infos du contact"
+        aria-expanded={infoOpen}
+        aria-controls="info-panel"
         onClick={() => dispatch(toggleInfoPanel())}
       >
         <Avatar
@@ -65,6 +68,8 @@ export default function ChatHeader({ chat, jid }: Props) {
         <button
           className="iconbtn"
           title="Infos du contact"
+          aria-expanded={infoOpen}
+          aria-controls="info-panel"
           onClick={() => dispatch(toggleInfoPanel())}
         >
           ℹ️

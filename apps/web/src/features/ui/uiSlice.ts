@@ -1,6 +1,7 @@
 import { createSlice } from '@reduxjs/toolkit';
 import type { PayloadAction } from '@reduxjs/toolkit';
 import type { RootState } from '../../app/store';
+import { logout } from '../auth/authSlice';
 
 // État d'UI local: la discussion sélectionnée. On garde le JID en mémoire
 // plutôt que dans l'URL car les JIDs contiennent '@' (routing fragile).
@@ -33,6 +34,10 @@ const uiSlice = createSlice({
     toggleInfoPanel(state) {
       state.infoPanelOpen = !state.infoPanelOpen;
     },
+  },
+  extraReducers: (builder) => {
+    // À la déconnexion, on réinitialise l'UI (discussion + volet d'infos).
+    builder.addCase(logout, () => initialState);
   },
 });
 

@@ -140,6 +140,8 @@ export class WhatsappService
     WaMessageType.DOCUMENT,
     WaMessageType.STICKER,
   ];
+  // Plafond de la galerie média (récents d'abord) — borne la requête/réponse.
+  private static readonly MEDIA_GALLERY_LIMIT = 200;
 
   constructor(
     private readonly config: ConfigService,
@@ -1475,6 +1477,23 @@ export class WhatsappService
     const rows = await this.prisma.waMessage.findMany({
       where: { chatJid: jid, type: { in: [...WhatsappService.MEDIA_TYPES] } },
       orderBy: { sentAt: 'desc' },
+      // Borné + `select` SANS rawMessage (gros blob proto inutile pour la galerie).
+      take: WhatsappService.MEDIA_GALLERY_LIMIT,
+      select: {
+        id: true,
+        chatJid: true,
+        fromMe: true,
+        senderJid: true,
+        senderName: true,
+        type: true,
+        text: true,
+        sentAt: true,
+        status: true,
+        quotedId: true,
+        media: true,
+        reactions: true,
+        clientId: true,
+      },
     });
     const items: WaMediaItem[] = [];
     for (const row of rows) {

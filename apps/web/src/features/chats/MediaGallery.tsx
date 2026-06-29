@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WaMediaItem } from '@app/shared-types';
 import { useAppSelector } from '../../app/hooks';
 import { selectAccessToken } from '../auth/authSlice';
@@ -50,18 +50,32 @@ function Lightbox({
   target: LightboxTarget;
   onClose: () => void;
 }) {
+  const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
+    // Déplace le focus dans la modale puis le restaure à la fermeture (a11y).
+    const prev = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      prev?.focus?.();
+    };
   }, [onClose]);
 
   return (
-    <div className="lightbox" onClick={onClose} role="dialog" aria-modal="true">
+    <div
+      className="lightbox"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Aperçu du média"
+    >
       <button
         type="button"
+        ref={closeRef}
         className="lightbox__close"
         onClick={onClose}
         aria-label="Fermer"
@@ -72,7 +86,7 @@ function Lightbox({
         <img
           className="lightbox__content"
           src={target.src}
-          alt=""
+          alt="Aperçu du média"
           onClick={(e) => e.stopPropagation()}
         />
       ) : (
@@ -104,18 +118,16 @@ function GalleryTile({
 
   const thumb = thumbDataUri(item.thumbnailBase64);
   const src = mediaSrc(item.url, token);
-  const isVisual =
-    item.kind === 'image' || item.kind === 'video' || item.kind === 'sticker';
+  const isImageLike = item.kind === 'image' || item.kind === 'sticker';
+  const isVideo = item.kind === 'video';
 
-  // Aperçu: miniature instantanée si dispo, sinon l'URL servie (visuels).
-  const previewSrc = thumb ?? (isVisual ? (src ?? undefined) : undefined);
+  // Aperçu image: miniature si dispo, sinon l'URL — UNIQUEMENT pour image/sticker.
+  // On ne met JAMAIS l'URL d'une vidéo dans un <img> (téléchargerait tout le fichier).
+  const previewSrc = thumb ?? (isImageLike ? (src ?? undefined) : undefined);
 
-  if (isVisual && previewSrc && !failed) {
-    // Source plein écran: l'URL complète pour la vidéo ; pour l'image, l'URL
-    // si dispo, sinon la miniature agrandie.
-    const lbKind: 'image' | 'video' = item.kind === 'video' ? 'video' : 'image';
-    const lbSrc = item.kind === 'video' ? src : (src ?? thumb ?? null);
-
+  if ((isImageLike || isVideo) && previewSrc && !failed) {
+    const lbKind: 'image' | 'video' = isVideo ? 'video' : 'image';
+    const lbSrc = isVideo ? src : (src ?? thumb ?? null);
     return (
       <button
         type="button"
@@ -132,7 +144,22 @@ function GalleryTile({
           decoding="async"
           onError={() => setFailed(true)}
         />
-        {item.kind === 'video' && <span className="gallery__play">▶</span>}
+        {isVideo && <span className="gallery__play">▶</span>}
+      </button>
+    );
+  }
+
+  // Vidéo SANS miniature: tuile « play » cliquable -> lightbox vidéo, sans
+  // télécharger la vidéo entière dans un <img>.
+  if (isVideo && src) {
+    return (
+      <button
+        type="button"
+        className="gallery__tile gallery__tile--video"
+        onClick={() => onOpen({ kind: 'video', src })}
+        title={item.caption ?? item.fileName ?? KIND_LABEL.video}
+      >
+        <span className="gallery__play gallery__play--big">▶</span>
       </button>
     );
   }

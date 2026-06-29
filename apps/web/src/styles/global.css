@@ -1100,6 +1100,14 @@ button {
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
   pointer-events: none;
 }
+/* Vidéo sans miniature: tuile sombre avec un gros play (pas de téléchargement). */
+.gallery__tile--video {
+  background: #2a2f32;
+}
+.gallery__play--big {
+  font-size: 30px;
+  background: transparent;
+}
 .gallery__file {
   position: relative;
   aspect-ratio: 1 / 1;
