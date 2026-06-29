@@ -1419,7 +1419,18 @@ export class WhatsappService
     });
     return rows
       .filter((r) => !this.isIgnoredChat(r.jid))
+      .filter((r) => !this.isPlaceholderChat(r))
       .map((r) => this.chatRowToDto(r));
+  }
+
+  // Discussion "fantôme": sans nom ET sans aperçu de message (souvent un @lid
+  // stray créé par la synchro avec un conversationTimestamp mais 0 message).
+  // Affichée, elle ne montrerait que le numéro brut.
+  private isPlaceholderChat(r: {
+    name: string | null;
+    lastMessagePreview: string | null;
+  }): boolean {
+    return !cleanName(r.name) && !cleanName(r.lastMessagePreview);
   }
 
   async listMessages(
