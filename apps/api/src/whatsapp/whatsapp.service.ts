@@ -42,6 +42,8 @@ import {
   type WaConnection,
   type WaMediaItem,
   type WaMessage,
+  type WaMessageInfoResponse,
+  type WaMessageReceipt,
   type WaPresence,
   type WaReaction,
 } from '@app/shared-types';
@@ -568,6 +570,15 @@ export class WhatsappService
   // Accusés (delivered/read/played) de nos messages envoyés.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async onReceiptUpdate(updates: any[]): Promise<void> {
+    // Convertit un timestamp proto (SECONDES Unix, parfois objet Long) en epoch ms.
+    const toMs = (t: unknown): number | null => {
+      if (t == null) return null;
+      const n =
+        typeof t === 'number'
+          ? t
+          : Number((t as { toNumber?: () => number }).toNumber?.() ?? t);
+      return Number.isFinite(n) && n > 0 ? n * 1000 : null;
+    };
     for (const { key, receipt } of updates) {
       const rawJid: string | undefined = key?.remoteJid ?? undefined;
       const id: string | undefined = key?.id ?? undefined;
@@ -587,7 +598,58 @@ export class WhatsappService
         })
         .catch(() => undefined);
       this.emit('message-status', { id, chatJid, status });
+
+      // Capture l'accusé PAR destinataire (panneau « Infos du message »).
+      // userJid identifie le destinataire (présent surtout en groupe).
+      const userJid =
+        (await this.resolvePn(receipt.userJid)) ?? receipt.userJid;
+      if (userJid) {
+        await this.mergeReceipt(chatJid, id, userJid, {
+          deliveredAt: toMs(receipt.receiptTimestamp),
+          readAt: toMs(receipt.readTimestamp),
+          playedAt: toMs(receipt.playedTimestamp),
+        });
+      }
     }
+  }
+
+  // Fusionne un accusé par destinataire dans la colonne JSON `receipts`.
+  // Les timestamps ne régressent jamais : on garde max(existant, nouveau).
+  private async mergeReceipt(
+    chatJid: string,
+    id: string,
+    userJid: string,
+    next: {
+      deliveredAt: number | null;
+      readAt: number | null;
+      playedAt: number | null;
+    },
+  ): Promise<void> {
+    const row = await this.prisma.waMessage
+      .findUnique({
+        where: { chatJid_id: { chatJid, id } },
+        select: { receipts: true },
+      })
+      .catch(() => null);
+    if (!row) return; // message pas encore en cache
+    const list = (row.receipts as WaMessageReceipt[] | null) ?? [];
+    const max = (a: number | null, b: number | null): number | null =>
+      a != null && b != null ? Math.max(a, b) : (a ?? b ?? null);
+    const existing = list.find((r) => r.userJid === userJid);
+    if (existing) {
+      existing.deliveredAt = max(existing.deliveredAt, next.deliveredAt);
+      existing.readAt = max(existing.readAt, next.readAt);
+      existing.playedAt = max(existing.playedAt, next.playedAt);
+    } else {
+      // name résolu à la lecture (getMessageInfo) -> stocké à null.
+      list.push({ userJid, name: null, ...next });
+    }
+    await this.prisma.waMessage
+      .update({
+        where: { chatJid_id: { chatJid, id } },
+        data: { receipts: list as unknown as Prisma.InputJsonValue },
+      })
+      .catch(() => undefined);
   }
 
   // Types Baileys volatils selon la version -> on borne le typage à la frontière.
@@ -1513,6 +1575,45 @@ export class WhatsappService
       });
     }
     return items;
+  }
+
+  // Détail des accusés par destinataire pour le panneau « Infos du message ».
+  // jid encodé côté client (encodeURIComponent) ; Express le décode en param.
+  async getMessageInfo(
+    chatJid: string,
+    id: string,
+  ): Promise<WaMessageInfoResponse> {
+    const jid = (await this.resolvePn(chatJid)) ?? chatJid;
+    const row = await this.prisma.waMessage.findUnique({
+      where: { chatJid_id: { chatJid: jid, id } },
+      select: { fromMe: true, sentAt: true, receipts: true },
+    });
+    if (!row) throw new NotFoundException('Message introuvable.');
+    const isGroup = isJidGroup(jid) ?? false;
+    // Résout le nom affichable à la lecture (le JSON stocké garde name = null).
+    const stored = (row.receipts as WaMessageReceipt[] | null) ?? [];
+    const receipts: WaMessageReceipt[] = [];
+    for (const r of stored) {
+      receipts.push({ ...r, name: await this.nameFor(r.userJid) });
+    }
+    // Tri : lus d'abord (readAt desc), puis distribués (deliveredAt desc), puis le reste.
+    const rank = (r: WaMessageReceipt): number =>
+      r.readAt != null ? 0 : r.deliveredAt != null ? 1 : 2;
+    receipts.sort((a, b) => {
+      const ra = rank(a);
+      const rb = rank(b);
+      if (ra !== rb) return ra - rb;
+      if (ra === 0) return (b.readAt ?? 0) - (a.readAt ?? 0);
+      if (ra === 1) return (b.deliveredAt ?? 0) - (a.deliveredAt ?? 0);
+      return 0;
+    });
+    return {
+      id,
+      chatJid: jid,
+      isGroup,
+      sentAt: row.sentAt.getTime(),
+      receipts,
+    };
   }
 
   // --- Persistance / helpers ---

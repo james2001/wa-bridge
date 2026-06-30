@@ -18,6 +18,7 @@ import type {
   WaChatsResponse,
   WaConnection,
   WaMessage,
+  WaMessageInfoResponse,
   WaMessagesPage,
 } from '@app/shared-types';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -48,6 +49,16 @@ export class WhatsappController {
     const lim = Math.min(Math.max(Number(limit) || 50, 1), 100);
     const bef = before ? Number(before) : null;
     return this.wa.listMessages(jid, bef, lim);
+  }
+
+  // Détail des accusés par destinataire (panneau « Infos du message »).
+  // jid encodé côté client (encodeURIComponent) ; Express le décode en param.
+  @Get('chats/:jid/messages/:id/info')
+  async messageInfo(
+    @Param('jid') jid: string,
+    @Param('id') id: string,
+  ): Promise<WaMessageInfoResponse> {
+    return this.wa.getMessageInfo(jid, id);
   }
 
   // Galerie média d'une discussion (« Médias, liens et documents »), tous les

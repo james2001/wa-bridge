@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import { WaMessageStatus, WaMessageType } from '@app/shared-types';
 import type { WaMessage, WaReaction } from '@app/shared-types';
 import { formatTime } from '../../lib/format';
 import MediaContent from './MediaContent';
+import MessageInfoModal from './MessageInfoModal';
 
 interface Props {
   message: WaMessage;
@@ -133,6 +135,8 @@ function quotedPreview(q: WaMessage): string {
 
 export default function MessageBubble({ message, quoted }: Props) {
   const isOwn = message.fromMe;
+  // Panneau « Infos du message » (accusés de réception), messages sortants.
+  const [infoOpen, setInfoOpen] = useState(false);
   const isRead =
     message.status === WaMessageStatus.READ ||
     message.status === WaMessageStatus.PLAYED;
@@ -166,6 +170,19 @@ export default function MessageBubble({ message, quoted }: Props) {
           (reactions.length > 0 ? ' bubble--has-reactions' : '')
         }
       >
+        {/* Déclencheur « Infos du message »: messages sortants uniquement,
+            discret, visible au survol de la bulle (cf. CSS .bubble__action). */}
+        {isOwn && (
+          <button
+            type="button"
+            className="bubble__action"
+            aria-label="Infos du message"
+            title="Infos du message"
+            onClick={() => setInfoOpen(true)}
+          >
+            ⓘ
+          </button>
+        )}
         {showSender && <span className="bubble__sender">{senderLabel}</span>}
         {hasQuote && (
           <div className="bubble__quote">
@@ -215,6 +232,9 @@ export default function MessageBubble({ message, quoted }: Props) {
           </div>
         )}
       </div>
+      {infoOpen && (
+        <MessageInfoModal message={message} onClose={() => setInfoOpen(false)} />
+      )}
     </div>
   );
 }

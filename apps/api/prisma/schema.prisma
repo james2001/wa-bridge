@@ -55,6 +55,7 @@ model WaMessage {
   quotedId   String?  @map("quoted_id")
   media      Json?
   reactions  Json?
+  receipts   Json?   // accusés par destinataire: [{userJid, deliveredAt, readAt, playedAt}] (epoch ms)
   clientId   String?  @map("client_id")
   // Horodatage de la dernière édition (null si jamais édité).
   editedAt   DateTime? @map("edited_at")
