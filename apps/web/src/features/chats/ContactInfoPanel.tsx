@@ -2,8 +2,14 @@ import { useEffect } from 'react';
 import { useAppDispatch } from '../../app/hooks';
 import Avatar from '../../components/Avatar';
 import MediaGallery from './MediaGallery';
-import { useGetChatsQuery, useGetChatMediaQuery } from './chatsApi';
+import {
+  useGetChatsQuery,
+  useGetChatMediaQuery,
+  useGetContactAboutQuery,
+} from './chatsApi';
 import { chatTitle, prettyJid } from './utils';
+import { formatChatTime } from '../../lib/format';
+import { blockChat } from '../../services/socket';
 import { closeInfoPanel } from '../ui/uiSlice';
 
 interface Props {
@@ -23,6 +29,16 @@ export default function ContactInfoPanel({ jid }: Props) {
   // Pour un 1:1 on affiche le numéro ; pour un groupe, le sujet EST le titre.
   const subtitle = isGroup ? 'Groupe' : prettyJid(jid);
   const mediaCount = media?.length ?? 0;
+
+  // Bio « À propos » : 1:1 uniquement (inutile de requêter pour un groupe).
+  const { data: about } = useGetContactAboutQuery(jid, { skip: isGroup });
+  const blocked = chat?.blocked ?? false;
+
+  // Bascule blocage : confirmation avant de bloquer (évite un clic accidentel).
+  const onToggleBlock = () => {
+    if (!blocked && !window.confirm(`Bloquer ${title} ?`)) return;
+    blockChat(jid, !blocked);
+  };
 
   // Échap ferme le panneau — sauf si une lightbox est ouverte (qui gère son
   // propre Échap), pour ne pas fermer les deux d'un coup.
@@ -67,6 +83,21 @@ export default function ContactInfoPanel({ jid }: Props) {
           <span className="infopanel__sub">{subtitle}</span>
         </section>
 
+        {/* « À propos » : 1:1 uniquement, masqué si aucun statut disponible. */}
+        {!isGroup && about?.status && (
+          <section className="infopanel__about">
+            <div className="infopanel__media-head">
+              <span>À propos</span>
+            </div>
+            <p className="infopanel__about-text">{about.status}</p>
+            {about.setAt != null && (
+              <span className="infopanel__about-date">
+                Mis à jour le {formatChatTime(about.setAt)}
+              </span>
+            )}
+          </section>
+        )}
+
         <section className="infopanel__media">
           <div className="infopanel__media-head">
             <span>Médias, liens et documents</span>
@@ -74,6 +105,19 @@ export default function ContactInfoPanel({ jid }: Props) {
           </div>
           <MediaGallery jid={jid} />
         </section>
+
+        {/* Zone d'actions : blocage du contact (1:1 uniquement). */}
+        {!isGroup && (
+          <section className="infopanel__actions">
+            <button
+              type="button"
+              className="infopanel__block"
+              onClick={onToggleBlock}
+            >
+              {blocked ? 'Débloquer' : 'Bloquer'}
+            </button>
+          </section>
+        )}
       </div>
     </aside>
   );

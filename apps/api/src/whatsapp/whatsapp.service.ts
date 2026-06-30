@@ -40,6 +40,7 @@ import {
   WaMessageType,
   type WaChat,
   type WaConnection,
+  type WaContactAbout,
   type WaMediaItem,
   type WaMessage,
   type WaMessageInfoResponse,
@@ -103,6 +104,9 @@ export class WhatsappService
   // Carte mémoire LID (<num>@lid) -> numéro (<phone>@s.whatsapp.net).
   // Chargée depuis wa_lid_map au démarrage, enrichie au fil des messages.
   private lidToPn = new Map<string, string>();
+  // Contacts bloqués (JID canonique). Re-synchronisé via fetchBlocklist à la
+  // connexion + events blocklist.* ; pas de persistance DB (mémoire seule).
+  private readonly blockedJids = new Set<string>();
   // Vrai pendant une synchro d'historique: évite un flot d'emit 'chats'.
   private historySyncing = false;
   // Garde + throttle du backfill des sujets de groupe (évite le rejeu à chaque
@@ -134,6 +138,10 @@ export class WhatsappService
   private static readonly AVATAR_TIMEOUT_MS = 10000;
   // Borne sur les mutations app-state (mute/archive) qui peuvent ne pas répondre.
   private static readonly CHATMODIFY_TIMEOUT_MS = 8000;
+  // Bornes sur les opérations de blocage / statut (peuvent ne pas répondre).
+  private static readonly BLOCKLIST_TIMEOUT_MS = 10000;
+  private static readonly BLOCK_TIMEOUT_MS = 8000;
+  private static readonly STATUS_TIMEOUT_MS = 8000;
   // Types de message porteurs d'un média (galerie « Médias, liens et documents »).
   private static readonly MEDIA_TYPES: readonly WaMessageType[] = [
     WaMessageType.IMAGE,
@@ -268,6 +276,20 @@ export class WhatsappService
           this.logger.error(`presence.update: ${e}`),
         );
       });
+      // Liste des contacts bloqués: snapshot complet (set) ou delta (update).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sock.ev.on('blocklist.set', (u: any) => {
+        void this.onBlocklistSet((u?.blocklist ?? []) as string[]).catch((e) =>
+          this.logger.error(`blocklist.set: ${e}`),
+        );
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sock.ev.on('blocklist.update', (u: any) => {
+        void this.onBlocklistUpdate(
+          (u?.blocklist ?? []) as string[],
+          (u?.type ?? 'add') as 'add' | 'remove',
+        ).catch((e) => this.logger.error(`blocklist.update: ${e}`));
+      });
     } finally {
       this.connecting = false;
     }
@@ -293,6 +315,7 @@ export class WhatsappService
       });
       this.logger.log('WhatsApp connecté');
       void this.backfillGroupSubjects();
+      void this.syncBlocklist();
     }
 
     if (connection === 'close') {
@@ -1225,6 +1248,128 @@ export class WhatsappService
       .catch((e) => this.logger.warn(`chatModify(${label}) ${jid}: ${e}`));
   }
 
+  // --- Blocage de contact / bio « À propos » ---
+
+  // Re-lit la ligne chat et émet chat-upsert (reflète un changement de blocage,
+  // comme le fait setMuted). Chat inconnu (1:1 jamais ouvert) -> rien à émettre.
+  private async emitChatRefresh(jid: string): Promise<void> {
+    const row = await this.prisma.waChat
+      .findUnique({ where: { jid } })
+      .catch(() => null);
+    if (row) this.emit('chat-upsert', this.chatRowToDto(row));
+  }
+
+  // Re-synchronise la liste des contacts bloqués (mémoire seule, pas de DB) via
+  // fetchBlocklist à la connexion. Bornée par withTimeout, jamais bloquante.
+  private async syncBlocklist(): Promise<void> {
+    if (!this.sock || this.connection.state !== ConnectionState.OPEN) return;
+    try {
+      const list = await this.withTimeout(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (this.sock as any).fetchBlocklist() as Promise<(string | undefined)[]>,
+        WhatsappService.BLOCKLIST_TIMEOUT_MS,
+      );
+      this.blockedJids.clear();
+      for (const j of list ?? []) {
+        if (!j) continue;
+        const jid = (await this.resolvePn(j)) ?? this.normJid(j);
+        if (jid) this.blockedJids.add(jid);
+      }
+      this.logger.log(
+        `Blocklist synchronisée: ${this.blockedJids.size} contact(s)` +
+          (this.blockedJids.size
+            ? ` [${[...this.blockedJids].join(', ')}]`
+            : ''),
+      );
+    } catch (e) {
+      this.logger.warn(`syncBlocklist: ${e}`);
+    }
+  }
+
+  // Snapshot complet de la blocklist (event 'blocklist.set'): remplace tout le
+  // set puis ré-émet les chats dont l'état de blocage a pu changer.
+  private async onBlocklistSet(jids: string[]): Promise<void> {
+    const next = new Set<string>();
+    for (const j of jids) {
+      if (!j) continue;
+      const jid = (await this.resolvePn(j)) ?? this.normJid(j);
+      if (jid) next.add(jid);
+    }
+    // Union ancien/nouveau: couvre les contacts nouvellement (dé)bloqués.
+    const affected = new Set<string>([...this.blockedJids, ...next]);
+    this.blockedJids.clear();
+    for (const jid of next) this.blockedJids.add(jid);
+    this.logger.log(`blocklist.set: ${this.blockedJids.size} contact(s) bloqué(s)`);
+    for (const jid of affected) await this.emitChatRefresh(jid);
+  }
+
+  // Delta de la blocklist (event 'blocklist.update'): add/remove selon le type,
+  // puis ré-émet chaque chat touché.
+  private async onBlocklistUpdate(
+    jids: string[],
+    type: 'add' | 'remove',
+  ): Promise<void> {
+    for (const j of jids) {
+      if (!j) continue;
+      const jid = (await this.resolvePn(j)) ?? this.normJid(j);
+      if (!jid) continue;
+      if (type === 'add') this.blockedJids.add(jid);
+      else this.blockedJids.delete(jid);
+      await this.emitChatRefresh(jid);
+    }
+    this.logger.log(`blocklist.update(${type}): ${jids.length} jid(s)`);
+  }
+
+  // Bloque / débloque un contact. État local AUTORITAIRE d'abord (set + emit),
+  // puis synchro WhatsApp best-effort, sans bloquer (calque syncChatModify).
+  async setBlocked(chatJid: string, blocked: boolean): Promise<void> {
+    const jid = (await this.resolvePn(chatJid)) ?? chatJid;
+    // 1) État local autoritaire: maj du set + re-lecture/emit immédiat.
+    if (blocked) this.blockedJids.add(jid);
+    else this.blockedJids.delete(jid);
+    await this.emitChatRefresh(jid);
+    // 2) Synchro WhatsApp best-effort (NE PAS bloquer/awaiter).
+    if (!this.sock || this.connection.state !== ConnectionState.OPEN) return;
+    void this.withTimeout(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (this.sock as any).updateBlockStatus(
+        jid,
+        blocked ? 'block' : 'unblock',
+      ) as Promise<unknown>,
+      WhatsappService.BLOCK_TIMEOUT_MS,
+    )
+      .then(() =>
+        this.logger.log(
+          `updateBlockStatus(${blocked ? 'block' : 'unblock'}) OK ${jid}`,
+        ),
+      )
+      .catch((e) => this.logger.warn(`updateBlockStatus ${jid}: ${e}`));
+  }
+
+  // Bio « À propos » d'un contact via fetchStatus. Hypothèse sur la forme:
+  // res[0].status est soit une chaîne, soit { status, setAt: Date }. Best-effort:
+  // toute erreur/indispo -> { status: null, setAt: null }.
+  async getContactAbout(jid: string): Promise<WaContactAbout> {
+    const jid2 = (await this.resolvePn(jid)) ?? jid;
+    try {
+      const res = await this.withTimeout(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (this.sock as any).fetchStatus(jid2) as Promise<any>,
+        WhatsappService.STATUS_TIMEOUT_MS,
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const s = res?.[0]?.status;
+      const text = typeof s === 'string' ? s : (s?.status ?? null);
+      const setAt = s?.setAt ? new Date(s.setAt).getTime() : null;
+      return {
+        status: cleanName(text) ?? null,
+        setAt: Number.isFinite(setAt) ? setAt : null,
+      };
+    } catch {
+      return { status: null, setAt: null };
+    }
+  }
+
   // Photo de profil d'un contact/groupe. Cache disque (fichier 'avatar_<jid>').
   // 404 (NotFoundException) si pas de photo -> le front affiche les initiales.
   // Protégé contre l'avalanche de requêtes: cache disque + cache négatif +
@@ -2042,6 +2187,11 @@ export class WhatsappService
       pinned: row.pinned,
       archived: row.archived,
       muted: row.muted,
+      // Bloqué: état mémoire (set re-synchronisé à la connexion + events).
+      // Un groupe n'est jamais bloqué (le set ne contient que des JID 1:1).
+      // On canonicalise row.jid (un chat peut être stocké sous @lid) pour la
+      // même clé que le set, sinon le has() raterait (cf. revue F1, dérive LID).
+      blocked: this.blockedJids.has(this.canonicalJid(row.jid) ?? row.jid),
       // URL backend de la photo de profil (servie à la demande; 404 -> initiales).
       // Le front ajoute le token ?t= pour l'auth.
       avatarUrl: '/api/wa/avatar/' + encodeURIComponent(row.jid),

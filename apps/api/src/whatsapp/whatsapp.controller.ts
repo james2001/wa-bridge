@@ -17,6 +17,7 @@ import type {
   WaChatMediaResponse,
   WaChatsResponse,
   WaConnection,
+  WaContactAbout,
   WaMessage,
   WaMessageInfoResponse,
   WaMessagesPage,
@@ -117,5 +118,12 @@ export class WhatsappController {
     res.setHeader('Content-Type', mimetype);
     res.setHeader('Cache-Control', 'private, max-age=86400');
     res.send(buffer);
+  }
+
+  // Bio « À propos » (statut) d'un contact. Best-effort (null si masqué/indispo).
+  // jid encodé côté client (encodeURIComponent) ; Express le décode en param.
+  @Get('contacts/:jid/about')
+  async contactAbout(@Param('jid') jid: string): Promise<WaContactAbout> {
+    return this.wa.getContactAbout(jid);
   }
 }

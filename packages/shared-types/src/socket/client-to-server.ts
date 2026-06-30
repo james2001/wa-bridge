@@ -25,4 +25,7 @@ export interface ClientToServerEvents {
 
   // Coupe / réactive les notifications d'une discussion (mute).
   'wa:mute': (input: { chatJid: string; muted: boolean }) => void;
+
+  // Bloque / débloque un contact (1:1).
+  'wa:block': (input: { chatJid: string; blocked: boolean }) => void;
 }
