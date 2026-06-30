@@ -572,6 +572,25 @@ export class WhatsappService
         })
         .catch(() => undefined); // message pas encore en cache
       this.emit('message-status', { id, chatJid, status });
+
+      // En 1:1, distribution/lecture arrivent ICI (statut agrégé) et NON via
+      // message-receipt.update — donc sans horodatage par destinataire. On
+      // enregistre alors l'accusé pour le destinataire (= le chat) horodaté à
+      // l'instant de réception (proxy précis à ~1-2 s), pour « Infos du
+      // message ». En groupe, message-receipt.update (par participant, horodaté)
+      // fait foi -> on ne double-compte pas ici.
+      if (!isJidGroup(chatJid)) {
+        const now = Date.now();
+        const stamp =
+          status === WaMessageStatus.PLAYED
+            ? { deliveredAt: null, readAt: null, playedAt: now }
+            : status === WaMessageStatus.READ
+              ? { deliveredAt: null, readAt: now, playedAt: null }
+              : status === WaMessageStatus.DELIVERED
+                ? { deliveredAt: now, readAt: null, playedAt: null }
+                : null;
+        if (stamp) await this.mergeReceipt(chatJid, id, chatJid, stamp);
+      }
     }
   }
 
@@ -651,10 +670,11 @@ export class WhatsappService
     const row = await this.prisma.waMessage
       .findUnique({
         where: { chatJid_id: { chatJid, id } },
-        select: { receipts: true },
+        select: { receipts: true, fromMe: true },
       })
       .catch(() => null);
-    if (!row) return; // message pas encore en cache
+    // Accusés seulement pour NOS messages sortants (pas pour les entrants).
+    if (!row || !row.fromMe) return;
     const list = (row.receipts as WaMessageReceipt[] | null) ?? [];
     const max = (a: number | null, b: number | null): number | null =>
       a != null && b != null ? Math.max(a, b) : (a ?? b ?? null);
