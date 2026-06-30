@@ -1,7 +1,28 @@
 import { useEffect, useRef } from 'react';
+import { WaMessageStatus } from '@app/shared-types';
 import type { WaMessage, WaMessageReceipt } from '@app/shared-types';
 import { prettyJid } from '../chats/utils';
 import { useGetMessageInfoQuery } from './messagesApi';
+
+// Repli quand aucun accusé PAR destinataire n'a été capturé (ex. messages
+// antérieurs à l'introduction du suivi des receipts) : on s'appuie sur le
+// statut agrégé du message, sinon on afficherait « en attente » alors que la
+// bulle montre ✓✓.
+function fallbackState(status: WaMessageStatus): string {
+  switch (status) {
+    case WaMessageStatus.READ:
+    case WaMessageStatus.PLAYED:
+      return 'Lu';
+    case WaMessageStatus.DELIVERED:
+      return 'Distribué';
+    case WaMessageStatus.PENDING:
+      return 'En cours d’envoi…';
+    case WaMessageStatus.ERROR:
+      return 'Échec de l’envoi';
+    default:
+      return 'En attente de distribution…';
+  }
+}
 
 interface Props {
   message: WaMessage;
@@ -120,7 +141,7 @@ export default function MessageInfoModal({ message, onClose }: Props) {
         )}
 
         {data && data.receipts.length === 0 && (
-          <p className="msginfo__state">En attente de distribution…</p>
+          <p className="msginfo__state">{fallbackState(message.status)}</p>
         )}
 
         {data?.receipts.map((receipt) => (

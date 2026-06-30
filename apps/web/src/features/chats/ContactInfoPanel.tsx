@@ -40,11 +40,12 @@ export default function ContactInfoPanel({ jid }: Props) {
     blockChat(jid, !blocked);
   };
 
-  // Échap ferme le panneau — sauf si une lightbox est ouverte (qui gère son
-  // propre Échap), pour ne pas fermer les deux d'un coup.
+  // Échap ferme le panneau — sauf si une couche modale est ouverte par-dessus
+  // (lightbox média ou modale « Infos du message »), qui gère son propre Échap,
+  // pour ne pas tout fermer d'un coup.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !document.querySelector('.lightbox')) {
+      if (e.key === 'Escape' && !document.querySelector('.lightbox, .msginfo')) {
         dispatch(closeInfoPanel());
       }
     };
