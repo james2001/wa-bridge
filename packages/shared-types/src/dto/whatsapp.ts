@@ -91,6 +91,27 @@ export interface WaMessagesPage {
   nextBefore: number | null; // timestamp à passer pour la page suivante
 }
 
+// Accusé de réception d'un message sortant, par destinataire
+// (panneau « Infos du message »). Les horodatages sont en epoch ms, null si
+// l'étape n'a pas (encore) eu lieu.
+export interface WaMessageReceipt {
+  userJid: string; // destinataire (JID canonicalisé)
+  name: string | null; // nom affichable (carnet/pushName), sinon null
+  deliveredAt: number | null; // distribué
+  readAt: number | null; // lu
+  playedAt: number | null; // écouté (note vocale / audio)
+}
+
+// GET /api/wa/chats/:jid/messages/:id/info
+// Détail des accusés d'un message SORTANT (vide pour un message entrant).
+export interface WaMessageInfoResponse {
+  id: string;
+  chatJid: string;
+  isGroup: boolean;
+  sentAt: number; // epoch ms — envoi
+  receipts: WaMessageReceipt[];
+}
+
 // Un élément média d'une discussion (galerie « Médias, liens et documents »).
 export interface WaMediaItem {
   id: string; // id du message

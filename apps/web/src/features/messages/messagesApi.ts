@@ -1,6 +1,7 @@
 import { api } from '../../app/api';
 import type {
   WaMessage,
+  WaMessageInfoResponse,
   WaMessagesPage,
   WaMessageStatus,
   WaReaction,
@@ -47,10 +48,20 @@ export const messagesApi = api.injectEndpoints({
         { type: 'WaMessages', id: arg.jid },
       ],
     }),
+    // Accusés de réception d'un message SORTANT (panneau « Infos du message »).
+    // Le backend ne renvoie de receipts que pour un message `fromMe`.
+    getMessageInfo: builder.query<
+      WaMessageInfoResponse,
+      { jid: string; id: string }
+    >({
+      query: ({ jid, id }) => ({
+        url: `/wa/chats/${encodeURIComponent(jid)}/messages/${encodeURIComponent(id)}/info`,
+      }),
+    }),
   }),
 });
 
-export const { useGetMessagesQuery } = messagesApi;
+export const { useGetMessagesQuery, useGetMessageInfoQuery } = messagesApi;
 
 // Toutes les mises à jour de cache ci-dessous ciblent l'entrée `{ jid }`, qui
 // se résout (via serializeQueryArgs) vers la MÊME clé de cache que la query

@@ -1178,3 +1178,117 @@ a.gallery__file:hover {
     border-left: none;
   }
 }
+
+/* Bouton « Infos du message » dans la bulle (messages sortants).
+   Discret par défaut, révélé au survol de la bulle. Ancré en haut à droite
+   sans recouvrir le texte (la bulle est déjà position: relative). */
+.bubble__action {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.12);
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease-in-out;
+  z-index: 2;
+}
+.bubble:hover .bubble__action {
+  opacity: 1;
+}
+.bubble__action:hover {
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text);
+}
+
+/* Modale « Infos du message » (overlay sombre + boîte claire centrée). */
+.msginfo {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 24px;
+}
+.msginfo__box {
+  position: relative;
+  width: 100%;
+  max-width: 360px;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  padding: 20px 18px 16px;
+}
+.msginfo__close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 30px;
+  height: 30px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 50%;
+}
+.msginfo__close:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+.msginfo__title {
+  margin: 0 0 14px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.msginfo__row {
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.msginfo__name {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.msginfo__step {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  padding: 2px 0;
+}
+.msginfo__step-label {
+  color: var(--text-muted);
+}
+.msginfo__step-time {
+  color: var(--text);
+}
+.msginfo__state {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 6px 0 0;
+}
+
+@media (max-width: 768px) {
+  /* Sur mobile, la modale occupe quasi tout l'écran. */
+  .msginfo__box {
+    max-width: none;
+    max-height: 90vh;
+  }
+}
