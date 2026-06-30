@@ -100,6 +100,11 @@ export function muteChat(chatJid: string, muted: boolean): void {
   socket?.emit('wa:mute', { chatJid, muted });
 }
 
+// Bloque / débloque un contact (le backend renvoie un 'wa:chat-upsert' à jour).
+export function blockChat(chatJid: string, blocked: boolean): void {
+  socket?.emit('wa:block', { chatJid, blocked });
+}
+
 // Délie la session WhatsApp (un nouveau scan QR sera nécessaire).
 export function waLogout(): Promise<{ ok: boolean }> {
   return new Promise((resolve, reject) => {

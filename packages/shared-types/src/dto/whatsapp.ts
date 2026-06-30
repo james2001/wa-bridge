@@ -31,7 +31,14 @@ export interface WaChat {
   pinned: boolean;
   archived: boolean;
   muted: boolean;
+  blocked: boolean; // contact bloqué (1:1 ; toujours false pour un groupe)
   avatarUrl: string | null;
+}
+
+// GET /api/wa/contacts/:jid/about -> bio/statut « À propos » d'un contact.
+export interface WaContactAbout {
+  status: string | null; // texte « À propos » (null si masqué/indispo)
+  setAt: number | null; // epoch ms de dernière mise à jour, si connu
 }
 
 // Métadonnées média (téléchargement paresseux via le backend).

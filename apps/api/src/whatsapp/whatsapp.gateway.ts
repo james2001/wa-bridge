@@ -150,6 +150,14 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
     await this.wa.setMuted(input.chatJid, input.muted);
   }
 
+  @SubscribeMessage('wa:block')
+  async onBlock(
+    @MessageBody() input: { chatJid: string; blocked: boolean },
+  ): Promise<void> {
+    this.logger.log(`wa:block ${input.chatJid} -> ${input.blocked}`);
+    await this.wa.setBlocked(input.chatJid, input.blocked);
+  }
+
   @SubscribeMessage('wa:subscribe-presence')
   async onSubscribePresence(
     @MessageBody() input: { jid: string },

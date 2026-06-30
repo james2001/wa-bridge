@@ -4,6 +4,7 @@ import type {
   WaChatsResponse,
   WaChatMediaResponse,
   WaMediaItem,
+  WaContactAbout,
 } from '@app/shared-types';
 
 export const chatsApi = api.injectEndpoints({
@@ -19,10 +20,15 @@ export const chatsApi = api.injectEndpoints({
       query: (jid) => ({ url: `/wa/chats/${encodeURIComponent(jid)}/media` }),
       transformResponse: (response: WaChatMediaResponse) => response.items,
     }),
+    // Bio « À propos » d'un contact 1:1 (clé de cache = jid).
+    getContactAbout: builder.query<WaContactAbout, string>({
+      query: (jid) => ({ url: `/wa/contacts/${encodeURIComponent(jid)}/about` }),
+    }),
   }),
 });
 
-export const { useGetChatsQuery, useGetChatMediaQuery } = chatsApi;
+export const { useGetChatsQuery, useGetChatMediaQuery, useGetContactAboutQuery } =
+  chatsApi;
 
 // Remplace tout le cache de la liste (sync initiale 'wa:chats').
 export function setChats(chats: WaChat[]) {
