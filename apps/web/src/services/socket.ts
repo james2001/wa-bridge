@@ -1,4 +1,5 @@
 import { io, Socket } from 'socket.io-client';
+import { DEFAULT_ACCOUNT_ID } from '@app/shared-types';
 import type {
   ClientToServerEvents,
   ServerToClientEvents,
@@ -44,6 +45,8 @@ export function disconnectSocket(): void {
 }
 
 export interface SendTextInput {
+  // Phase 1 mono-compte: optionnel, défaut 'default' (rétro-compat serveur).
+  accountId?: string;
   chatJid: string;
   text: string;
   clientId: string;
@@ -66,7 +69,8 @@ export function sendText(input: SendTextInput): Promise<SendTextAck> {
     }
     s.timeout(15_000).emit(
       'wa:send-text',
-      input,
+      // accountId par défaut 'default' ; un appelant peut le surcharger.
+      { accountId: DEFAULT_ACCOUNT_ID, ...input },
       (err: Error | null, ack: SendTextAck) => {
         if (err) reject(err);
         else resolve(ack);
@@ -113,8 +117,11 @@ export function waLogout(): Promise<{ ok: boolean }> {
       reject(new Error('Socket non connecté'));
       return;
     }
+    // wa:logout attend désormais (input, ack). accountId omis -> 'default' côté
+    // serveur (rétro-compat mono-compte).
     s.timeout(10_000).emit(
       'wa:logout',
+      {},
       (err: Error | null, ack: { ok: boolean }) => {
         if (err) reject(err);
         else resolve(ack);

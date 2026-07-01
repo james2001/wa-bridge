@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { WaMessageStatus, WaMessageType } from '@app/shared-types';
+import { DEFAULT_ACCOUNT_ID, WaMessageStatus, WaMessageType } from '@app/shared-types';
 import type { WaMessage } from '@app/shared-types';
 import { useAppDispatch } from '../../app/hooks';
 import { sendText, setTyping } from '../../services/socket';
@@ -56,6 +56,8 @@ export default function Composer({ chatJid }: Props) {
     stopTyping();
     const clientId = crypto.randomUUID();
     const optimistic: WaMessage = {
+      // Phase 1 mono-compte: l'écho optimistic appartient au compte 'default'.
+      accountId: DEFAULT_ACCOUNT_ID,
       id: clientId,
       chatJid,
       fromMe: true,

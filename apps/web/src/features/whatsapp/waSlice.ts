@@ -1,6 +1,6 @@
 import { createSlice } from '@reduxjs/toolkit';
 import type { PayloadAction } from '@reduxjs/toolkit';
-import { ConnectionState } from '@app/shared-types';
+import { ConnectionState, DEFAULT_ACCOUNT_ID } from '@app/shared-types';
 import type { WaConnection, WaPresence } from '@app/shared-types';
 import type { RootState } from '../../app/store';
 
@@ -11,7 +11,13 @@ interface WaState {
 }
 
 const initialState: WaState = {
-  connection: { state: ConnectionState.CONNECTING, qr: null, me: null },
+  // Phase 1 mono-compte: placeholder 'default' avant le premier 'wa:connection'.
+  connection: {
+    accountId: DEFAULT_ACCOUNT_ID,
+    state: ConnectionState.CONNECTING,
+    qr: null,
+    me: null,
+  },
   presences: {},
 };
 

@@ -14,6 +14,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import type {
+  WaAccountsResponse,
   WaChatMediaResponse,
   WaChatsResponse,
   WaConnection,
@@ -30,14 +31,24 @@ import { WhatsappService } from './whatsapp.service';
 export class WhatsappController {
   constructor(private readonly wa: WhatsappService) {}
 
+  // Liste des comptes liés au pont (multi-compte). Phase 1: un seul ('default').
+  @Get('accounts')
+  async accounts(): Promise<WaAccountsResponse> {
+    return this.wa.listAccounts();
+  }
+
+  // accountId en query optionnelle (défaut 'default') -> URLs existantes
+  // inchangées, rétro-compatibles avec le front actuel.
   @Get('status')
-  status(): WaConnection {
-    return this.wa.getConnection();
+  status(@Query('accountId') accountId = 'default'): WaConnection {
+    return this.wa.getConnection(accountId);
   }
 
   @Get('chats')
-  async chats(): Promise<WaChatsResponse> {
-    return { chats: await this.wa.listChats() };
+  async chats(
+    @Query('accountId') accountId = 'default',
+  ): Promise<WaChatsResponse> {
+    return { chats: await this.wa.listChats(accountId) };
   }
 
   // jid encodé côté client (encodeURIComponent) ; Express le décode en param.
@@ -46,10 +57,11 @@ export class WhatsappController {
     @Param('jid') jid: string,
     @Query('before') before?: string,
     @Query('limit') limit?: string,
+    @Query('accountId') accountId = 'default',
   ): Promise<WaMessagesPage> {
     const lim = Math.min(Math.max(Number(limit) || 50, 1), 100);
     const bef = before ? Number(before) : null;
-    return this.wa.listMessages(jid, bef, lim);
+    return this.wa.listMessages(accountId, jid, bef, lim);
   }
 
   // Détail des accusés par destinataire (panneau « Infos du message »).
@@ -58,16 +70,20 @@ export class WhatsappController {
   async messageInfo(
     @Param('jid') jid: string,
     @Param('id') id: string,
+    @Query('accountId') accountId = 'default',
   ): Promise<WaMessageInfoResponse> {
-    return this.wa.getMessageInfo(jid, id);
+    return this.wa.getMessageInfo(accountId, jid, id);
   }
 
   // Galerie média d'une discussion (« Médias, liens et documents »), tous les
   // médias récents d'abord. Coexiste avec le POST de même chemin (envoi média).
   // jid encodé côté client (encodeURIComponent) ; Express le décode en param.
   @Get('chats/:jid/media')
-  async chatMedia(@Param('jid') jid: string): Promise<WaChatMediaResponse> {
-    return { items: await this.wa.listChatMedia(jid) };
+  async chatMedia(
+    @Param('jid') jid: string,
+    @Query('accountId') accountId = 'default',
+  ): Promise<WaChatMediaResponse> {
+    return { items: await this.wa.listChatMedia(accountId, jid) };
   }
 
   // Envoi d'un média (image/vidéo/audio/document) depuis le pont vers WhatsApp.
@@ -80,9 +96,10 @@ export class WhatsappController {
     @Param('jid') jid: string,
     @UploadedFile() file: Express.Multer.File,
     @Body('caption') caption?: string,
+    @Query('accountId') accountId = 'default',
   ): Promise<WaMessage> {
     if (!file) throw new BadRequestException('Fichier manquant');
-    return this.wa.sendMedia(jid, file, caption);
+    return this.wa.sendMedia(accountId, jid, file, caption);
   }
 
   // Média déchiffré à la demande (cache disque). Auth via header Bearer OU ?t=.
@@ -92,8 +109,13 @@ export class WhatsappController {
     @Param('chatJid') chatJid: string,
     @Param('id') id: string,
     @Res() res: Response,
+    @Query('accountId') accountId = 'default',
   ): Promise<void> {
-    const { buffer, mimetype, fileName } = await this.wa.getMedia(chatJid, id);
+    const { buffer, mimetype, fileName } = await this.wa.getMedia(
+      accountId,
+      chatJid,
+      id,
+    );
     res.setHeader('Content-Type', mimetype);
     res.setHeader('Cache-Control', 'private, max-age=86400');
     // Documents -> téléchargement avec nom ; autres médias -> affichage inline.
@@ -113,8 +135,9 @@ export class WhatsappController {
   async avatar(
     @Param('jid') jid: string,
     @Res() res: Response,
+    @Query('accountId') accountId = 'default',
   ): Promise<void> {
-    const { buffer, mimetype } = await this.wa.getAvatar(jid);
+    const { buffer, mimetype } = await this.wa.getAvatar(accountId, jid);
     res.setHeader('Content-Type', mimetype);
     res.setHeader('Cache-Control', 'private, max-age=86400');
     res.send(buffer);
@@ -123,7 +146,10 @@ export class WhatsappController {
   // Bio « À propos » (statut) d'un contact. Best-effort (null si masqué/indispo).
   // jid encodé côté client (encodeURIComponent) ; Express le décode en param.
   @Get('contacts/:jid/about')
-  async contactAbout(@Param('jid') jid: string): Promise<WaContactAbout> {
-    return this.wa.getContactAbout(jid);
+  async contactAbout(
+    @Param('jid') jid: string,
+    @Query('accountId') accountId = 'default',
+  ): Promise<WaContactAbout> {
+    return this.wa.getContactAbout(accountId, jid);
   }
 }
