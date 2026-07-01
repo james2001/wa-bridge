@@ -339,10 +339,12 @@ function extractContent(
   return { type: WaMessageType.UNSUPPORTED, text: null, media: null, quotedId };
 }
 
-/** Mappe un message Baileys (proto.IWebMessageInfo) vers le DTO WaMessage. */
+/** Mappe un message Baileys (proto.IWebMessageInfo) vers le DTO WaMessage.
+ *  accountId: compte propriétaire (défaut 'default' en mono-compte). */
 export function mapWaMessage(
   m: proto.IWebMessageInfo,
   meId?: string | null,
+  accountId = 'default',
 ): WaMessage | null {
   const remoteJid = m.key?.remoteJid;
   const id = m.key?.id;
@@ -368,6 +370,7 @@ export function mapWaMessage(
   const { type, text, media, quotedId } = extracted;
 
   return {
+    accountId,
     id,
     chatJid: remoteJid,
     fromMe,

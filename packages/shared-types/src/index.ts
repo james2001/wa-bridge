@@ -8,4 +8,5 @@ export * from './socket/server-to-client';
 // Données attachées à chaque socket authentifié côté serveur.
 export interface SocketData {
   appUserId: string;
+  currentAccountId?: string; // compte courant abonné par la socket (défaut 'default')
 }
