@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { DEFAULT_ACCOUNT_ID, WaMessageStatus, WaMessageType } from '@app/shared-types';
+import { WaMessageStatus, WaMessageType } from '@app/shared-types';
 import type { WaMessage } from '@app/shared-types';
 import { useAppDispatch } from '../../app/hooks';
 import { sendText, setTyping } from '../../services/socket';
@@ -8,9 +8,10 @@ import { upsertMessage } from './messagesApi';
 
 interface Props {
   chatJid: string;
+  accountId: string;
 }
 
-export default function Composer({ chatJid }: Props) {
+export default function Composer({ chatJid, accountId }: Props) {
   const dispatch = useAppDispatch();
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -27,7 +28,7 @@ export default function Composer({ chatJid }: Props) {
     }
     if (typingRef.current) {
       typingRef.current = false;
-      setTyping(chatJid, false);
+      setTyping(accountId, chatJid, false);
     }
   };
 
@@ -39,7 +40,7 @@ export default function Composer({ chatJid }: Props) {
     if (value.length > 0) {
       if (!typingRef.current) {
         typingRef.current = true;
-        setTyping(chatJid, true);
+        setTyping(accountId, chatJid, true);
       }
       if (typingTimeout.current) clearTimeout(typingTimeout.current);
       typingTimeout.current = setTimeout(stopTyping, 2000);
@@ -56,8 +57,8 @@ export default function Composer({ chatJid }: Props) {
     stopTyping();
     const clientId = crypto.randomUUID();
     const optimistic: WaMessage = {
-      // Phase 1 mono-compte: l'écho optimistic appartient au compte 'default'.
-      accountId: DEFAULT_ACCOUNT_ID,
+      // L'écho optimistic appartient au compte actif (émetteur).
+      accountId,
       id: clientId,
       chatJid,
       fromMe: true,
@@ -75,15 +76,15 @@ export default function Composer({ chatJid }: Props) {
 
     setText('');
     setSending(true);
-    dispatch(upsertMessage(chatJid, optimistic));
+    dispatch(upsertMessage(accountId, chatJid, optimistic));
 
     try {
-      const ack = await sendText({ chatJid, text: value, clientId });
+      const ack = await sendText({ accountId, chatJid, text: value, clientId });
       if (ack.ok && ack.message) {
-        dispatch(upsertMessage(chatJid, ack.message));
+        dispatch(upsertMessage(accountId, chatJid, ack.message));
       } else {
         dispatch(
-          upsertMessage(chatJid, {
+          upsertMessage(accountId, chatJid, {
             ...optimistic,
             status: WaMessageStatus.ERROR,
           }),
@@ -91,7 +92,7 @@ export default function Composer({ chatJid }: Props) {
       }
     } catch {
       dispatch(
-        upsertMessage(chatJid, {
+        upsertMessage(accountId, chatJid, {
           ...optimistic,
           status: WaMessageStatus.ERROR,
         }),
@@ -131,6 +132,7 @@ export default function Composer({ chatJid }: Props) {
       await http.post(
         `/wa/chats/${encodeURIComponent(chatJid)}/media`,
         form,
+        { params: { accountId } },
       );
     } catch {
       setUploadError(true);

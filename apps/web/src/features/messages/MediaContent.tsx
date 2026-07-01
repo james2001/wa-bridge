@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { WaMediaInfo, WaMessage } from '@app/shared-types';
 import { useAppSelector } from '../../app/hooks';
 import { selectAccessToken } from '../auth/authSlice';
+import { authedMediaUrl } from '../../lib/mediaUrl';
 
 interface Props {
   // L'appelant garantit message.media non nul.
@@ -112,10 +113,7 @@ export default function MediaContent({ message }: Props) {
   // Sécurité: l'appelant garantit media non nul, mais on reste défensif.
   if (!media) return null;
 
-  const src =
-    media.url && token
-      ? media.url + '?t=' + encodeURIComponent(token)
-      : null;
+  const src = authedMediaUrl(media.url, token, message.accountId);
   const poster = thumbDataUri(media.thumbnailBase64);
 
   // Légende: priorité à la légende du média, repli sur le texte du message.

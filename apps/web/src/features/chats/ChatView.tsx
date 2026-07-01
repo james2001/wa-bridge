@@ -1,4 +1,6 @@
 import { useEffect } from 'react';
+import { useAppSelector } from '../../app/hooks';
+import { selectActiveAccountId } from '../ui/uiSlice';
 import { useGetChatsQuery } from './chatsApi';
 import ChatHeader from './ChatHeader';
 import MessageList from '../messages/MessageList';
@@ -10,20 +12,21 @@ interface Props {
 }
 
 export default function ChatView({ jid }: Props) {
-  const { data: chats } = useGetChatsQuery();
+  const accountId = useAppSelector(selectActiveAccountId);
+  const { data: chats } = useGetChatsQuery(accountId);
   const chat = chats?.find((c) => c.jid === jid);
 
   // À l'ouverture d'une discussion: marquer comme lue + suivre la présence.
   useEffect(() => {
-    markRead(jid);
-    subscribePresence(jid);
-  }, [jid]);
+    markRead(accountId, jid);
+    subscribePresence(accountId, jid);
+  }, [accountId, jid]);
 
   return (
     <section className="chat">
-      <ChatHeader chat={chat} jid={jid} />
-      <MessageList jid={jid} />
-      <Composer chatJid={jid} />
+      <ChatHeader chat={chat} jid={jid} accountId={accountId} />
+      <MessageList jid={jid} accountId={accountId} />
+      <Composer chatJid={jid} accountId={accountId} />
     </section>
   );
 }

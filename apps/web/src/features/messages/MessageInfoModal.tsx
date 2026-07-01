@@ -86,6 +86,7 @@ function ReceiptRow({
 export default function MessageInfoModal({ message, onClose }: Props) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const { data, isLoading, isError } = useGetMessageInfoQuery({
+    accountId: message.accountId,
     jid: message.chatJid,
     id: message.id,
   });

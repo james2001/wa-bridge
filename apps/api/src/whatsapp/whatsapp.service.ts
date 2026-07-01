@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import {
   mkdir,
   readFile,
@@ -16,7 +17,7 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import makeWASocket, {
   DisconnectReason,
   downloadMediaMessage,
@@ -72,6 +73,8 @@ const cleanName = (s: unknown): string | null => {
 // Événements domaine émis par le service (consommés par la gateway). Chaque
 // signature porte `accountId` en 1er argument (routage multi-compte).
 export interface WhatsappEvents {
+  // Liste des comptes changée (ajout / suppression / renommage).
+  accounts: (p: WaAccountsResponse) => void;
   connection: (accountId: string, conn: WaConnection) => void;
   message: (accountId: string, msg: WaMessage) => void;
   'message-status': (
@@ -134,6 +137,10 @@ export class WhatsappService
   private baseMediaDir = '/data/media-cache';
   // État runtime par compte. En Phase 1, une seule clé: 'default'.
   private readonly sessions = new Map<string, AccountSession>();
+  // Comptes supprimés dans ce process: empêche toute reconnexion "zombie"
+  // déclenchée par un événement Baileys tardif (close/loggedOut) après purge.
+  // Les ids étant des UUID, ils ne sont jamais réutilisés -> tombstone durable.
+  private readonly removedAccounts = new Set<string>();
 
   private static readonly LOCAL_META_GUARD_MS = 20_000;
   private static readonly AVATAR_MAX_CONCURRENT = 3;
@@ -184,6 +191,19 @@ export class WhatsappService
       .catch((e) => this.logger.warn(`seed compte default: ${e}`));
     await this.loadLidMap(DEFAULT_ACCOUNT_ID);
     await this.connect(DEFAULT_ACCOUNT_ID);
+
+    // Reconnecte les comptes secondaires déjà liés (hors 'default', déjà lancé,
+    // et hors ceux explicitement déliés -> status 'logged_out'). Non bloquant.
+    const others = await this.prisma.waAccount
+      .findMany({ where: { id: { not: DEFAULT_ACCOUNT_ID } } })
+      .catch(() => []);
+    for (const acc of others) {
+      if ((acc.status as ConnectionState) === ConnectionState.LOGGED_OUT) {
+        continue;
+      }
+      await this.loadLidMap(acc.id);
+      void this.connect(acc.id);
+    }
   }
 
   onModuleDestroy(): void {
@@ -246,8 +266,35 @@ export class WhatsappService
     return s;
   }
 
+  // Vrai SI la session porte un cycle de connexion RÉEL (socket créé, ou
+  // connexion en cours), par opposition à une session FANTÔME fabriquée par
+  // ensureSession depuis un chemin de LECTURE (listChats/chatRowToDto, markRead…)
+  // pour un compte sans connexion: celle-ci a sock=null & connecting=false et son
+  // connection.state 'connecting' ne doit JAMAIS écraser le vrai statut DB.
+  private isLiveSession(s: AccountSession): boolean {
+    return s.sock !== null || s.connecting;
+  }
+
+  // Connexion live d'un compte SANS créer de session (lecture seule). Renvoie
+  // null si aucune session RÉELLE n'existe (compte délié / non reconnecté au
+  // boot, ou session fantôme issue d'un chemin de lecture).
+  peekConnection(accountId: string): WaConnection | null {
+    const s = this.sessions.get(accountId);
+    return s && this.isLiveSession(s) ? s.connection : null;
+  }
+
+  // Connexion d'un compte. NON MUTANT: ne crée PAS de session fantôme pour un
+  // compte sans session live (sinon on écraserait un vrai statut 'logged_out'
+  // stocké par un placeholder 'connecting'). Repli sur un DTO 'connecting'.
   getConnection(accountId = DEFAULT_ACCOUNT_ID): WaConnection {
-    return this.ensureSession(accountId).connection;
+    return (
+      this.peekConnection(accountId) ?? {
+        accountId,
+        state: ConnectionState.CONNECTING,
+        qr: null,
+        me: null,
+      }
+    );
   }
 
   private setConnection(
@@ -255,8 +302,30 @@ export class WhatsappService
     patch: Partial<WaConnection>,
   ): void {
     const s = this.ensureSession(accountId);
-    s.connection = { ...s.connection, ...patch, accountId };
+    const prev = s.connection;
+    s.connection = { ...prev, ...patch, accountId };
     this.emit('connection', accountId, s.connection);
+    // Persiste l'état "durable" (status + phoneJid) sur les transitions utiles
+    // pour survivre au redémarrage et piloter la reconnexion au boot. On ignore
+    // les états transitoires QR/CONNECTING (le QR ne se persiste pas). Le 'default'
+    // reste toujours reconnecté au boot: pas besoin de persister son status.
+    if (
+      accountId !== DEFAULT_ACCOUNT_ID &&
+      s.connection.state !== prev.state &&
+      s.connection.state !== ConnectionState.QR &&
+      s.connection.state !== ConnectionState.CONNECTING
+    ) {
+      const phoneJid = s.connection.me?.jid ?? null;
+      void this.prisma.waAccount
+        .update({
+          where: { id: accountId },
+          data: {
+            status: s.connection.state,
+            ...(phoneJid ? { phoneJid } : {}),
+          },
+        })
+        .catch(() => undefined);
+    }
   }
 
   // Liste des comptes du pont (REST GET /wa/accounts). Le 'default' reflète
@@ -266,7 +335,10 @@ export class WhatsappService
       .findMany({ orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] })
       .catch(() => []);
     const accounts: WaAccount[] = rows.map((r) => {
-      const live = this.sessions.get(r.id);
+      const s = this.sessions.get(r.id);
+      // On ne fait confiance à la session QUE si elle est réelle (isLiveSession):
+      // une session fantôme (chemin de lecture) ne doit pas écraser le statut DB.
+      const live = s && this.isLiveSession(s) ? s : null;
       const status = live
         ? live.connection.state
         : (r.status as ConnectionState);
@@ -284,9 +356,163 @@ export class WhatsappService
     return { accounts, defaultAccountId: DEFAULT_ACCOUNT_ID };
   }
 
+  // Diffuse la liste des comptes à jour (après create/delete/rename).
+  private async emitAccounts(): Promise<void> {
+    this.emit('accounts', await this.listAccounts());
+  }
+
+  // Crée un nouveau compte et lance sa connexion (un QR sera émis via
+  // 'wa:connection' pour l'id renvoyé). Le label est nettoyé; couleur optionnelle.
+  async createAccount(label: string, color?: string): Promise<WaAccount> {
+    const cleanLabel = cleanName(label) ?? 'Nouveau compte';
+    // id court, stable et sûr comme nom de sous-dossier (auth/media).
+    const id = `acc_${randomUUID().slice(0, 8)}`;
+    const agg = await this.prisma.waAccount
+      .aggregate({ _max: { sortOrder: true } })
+      .catch(() => null);
+    const sortOrder = (agg?._max.sortOrder ?? 0) + 1;
+    const row = await this.prisma.waAccount.create({
+      data: {
+        id,
+        label: cleanLabel,
+        color: color ?? null,
+        status: ConnectionState.CONNECTING,
+        isDefault: false,
+        sortOrder,
+      },
+    });
+    // Prépare la session + démarre la connexion (émettra le QR).
+    await this.loadLidMap(id);
+    void this.connect(id);
+    await this.emitAccounts();
+    return {
+      id: row.id,
+      label: row.label,
+      color: row.color,
+      phoneJid: null,
+      status: ConnectionState.CONNECTING,
+      isDefault: false,
+      sortOrder: row.sortOrder,
+    };
+  }
+
+  // (Re)lance la connexion d'un compte existant (ex: régénérer un QR).
+  async connectAccount(accountId = DEFAULT_ACCOUNT_ID): Promise<void> {
+    const s = this.ensureSession(accountId);
+    s.destroyed = false;
+    await this.connect(accountId);
+  }
+
+  // Renomme / recolore un compte (couleur mise à jour seulement si fournie).
+  async renameAccount(
+    accountId: string,
+    label?: string,
+    color?: string,
+  ): Promise<void> {
+    const data: Prisma.WaAccountUpdateInput = {};
+    const cleanLabel = cleanName(label);
+    if (cleanLabel) data.label = cleanLabel;
+    if (color !== undefined) data.color = color || null;
+    if (Object.keys(data).length === 0) return;
+    await this.prisma.waAccount
+      .update({ where: { id: accountId }, data })
+      .catch((e) => this.logger.warn(`renameAccount ${accountId}: ${e}`));
+    await this.emitAccounts();
+  }
+
+  // Valide un id de compte destiné à une opération DESTRUCTIVE. Rejette le
+  // compte principal et tout id non conforme (vide, '.', '..', séparateurs de
+  // chemin…) pour empêcher toute traversée vers la racine partagée. Les ids
+  // générés sont de la forme `acc_<hex>` -> ce motif les couvre.
+  private assertDeletableAccountId(accountId: string): void {
+    if (accountId === DEFAULT_ACCOUNT_ID) {
+      throw new Error('Le compte principal ne peut pas être supprimé.');
+    }
+    if (!/^[A-Za-z0-9_-]{3,64}$/.test(accountId)) {
+      throw new Error('Identifiant de compte invalide.');
+    }
+  }
+
+  // Défense en profondeur: garantit que `dir` est STRICTEMENT sous `base`
+  // (jamais la racine elle-même), avant tout rm récursif.
+  private assertUnderBase(dir: string, base: string): void {
+    const rel = relative(base, dir);
+    if (!rel || rel === '..' || rel.startsWith('..') || isAbsolute(rel)) {
+      throw new Error('Chemin de compte hors du dossier autorisé.');
+    }
+  }
+
+  // Déliaison best-effort bornée dans le temps (logout() peut ne jamais répondre
+  // si le socket est déjà mort) -> ne bloque pas la suppression / l'ACK client.
+  private async safeLogout(s: AccountSession): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const guard = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, 4000);
+      // Ne pas retenir l'event loop si logout() gagne la course (arrêt gracieux).
+      timer.unref?.();
+    });
+    try {
+      await Promise.race([s.sock?.logout() ?? Promise.resolve(), guard]);
+    } catch {
+      /* déjà hors ligne */
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  // Supprime un compte: purge des données scopées + dossiers auth/média, puis
+  // déliaison. Interdit sur 'default'. La transaction DB est le POINT DE COMMIT:
+  // si elle échoue, on lève (rien de destructif n'a eu lieu) -> l'ACK renvoie
+  // ok:false et l'état reste cohérent.
+  async deleteAccount(accountId: string): Promise<void> {
+    this.assertDeletableAccountId(accountId);
+    const exists = await this.prisma.waAccount.findUnique({
+      where: { id: accountId },
+    });
+    if (!exists) {
+      throw new Error('Compte introuvable.');
+    }
+    const authDir = this.authDirFor(accountId);
+    const mediaDir = this.mediaDirFor(accountId);
+    this.assertUnderBase(authDir, this.baseAuthDir);
+    this.assertUnderBase(mediaDir, this.baseMediaDir);
+
+    // 1) Purge DB atomique. Si elle échoue, on PROPAGE (pas de .catch): aucune
+    //    session n'a été fermée et aucun dossier supprimé -> état intact.
+    await this.prisma.$transaction([
+      this.prisma.waMessage.deleteMany({ where: { accountId } }),
+      this.prisma.waChat.deleteMany({ where: { accountId } }),
+      this.prisma.waContact.deleteMany({ where: { accountId } }),
+      this.prisma.waLidMap.deleteMany({ where: { accountId } }),
+      this.prisma.waAccount.delete({ where: { id: accountId } }),
+    ]);
+
+    // 2) Point de commit franchi: nettoyage best-effort (session + dossiers).
+    //    Tombstone AVANT teardown: un événement Baileys tardif ne peut plus
+    //    relancer la connexion (cf. garde dans connect()).
+    this.removedAccounts.add(accountId);
+    const s = this.sessions.get(accountId);
+    if (s) {
+      s.destroyed = true;
+      await this.safeLogout(s);
+      try {
+        s.sock?.end(undefined);
+      } catch {
+        /* noop */
+      }
+      this.sessions.delete(accountId);
+    }
+    // Dossiers auth/média du compte (sous-dossiers dédiés, jamais la racine).
+    await rm(authDir, { recursive: true, force: true }).catch(() => undefined);
+    await rm(mediaDir, { recursive: true, force: true }).catch(() => undefined);
+    await this.emitAccounts();
+  }
+
   // --- Connexion / cycle de vie ---
 
   private async connect(accountId = DEFAULT_ACCOUNT_ID): Promise<void> {
+    // Compte supprimé: ne jamais (re)connecter (garde anti-zombie).
+    if (this.removedAccounts.has(accountId)) return;
     const s = this.ensureSession(accountId);
     if (s.connecting || s.destroyed) return;
     s.connecting = true;

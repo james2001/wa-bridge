@@ -1333,3 +1333,227 @@ a.gallery__file:hover {
     max-height: 90vh;
   }
 }
+
+/* --- Barre de comptes (multi-compte) --- */
+.acctbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--header);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.acctbar--single {
+  padding: 4px 12px 6px;
+}
+.acctbar__add {
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 16px;
+  padding: 5px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.acctbar__add:hover {
+  color: var(--text);
+  border-color: var(--green);
+}
+.acctbar__add--icon {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 18px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+.acctchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 0 4px 0 2px;
+  flex: 0 0 auto;
+  max-width: 180px;
+}
+.acctchip--active {
+  border-width: 1.5px;
+  border-color: var(--green);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+.acctchip__main {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 6px 6px 6px 10px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+.acctchip--active .acctchip__main {
+  font-weight: 600;
+}
+.acctchip__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.acctchip__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.acctchip__del {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.acctchip__del:hover {
+  background: var(--bg);
+  color: var(--danger);
+}
+
+/* --- Modale « Ajouter un compte » --- */
+.addacct {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 24px;
+}
+.addacct__box {
+  position: relative;
+  width: 100%;
+  max-width: 380px;
+  max-height: 85vh;
+  overflow-y: auto;
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  padding: 24px 22px 20px;
+}
+.addacct__close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 30px;
+  height: 30px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 50%;
+}
+.addacct__close:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+.addacct__title {
+  margin: 0 0 16px;
+  font-size: 18px;
+  font-weight: 600;
+  text-align: center;
+}
+.addacct__form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.addacct__field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.addacct__field input {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--text);
+}
+.addacct__colors {
+  display: flex;
+  gap: 10px;
+}
+.addacct__color {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.addacct__color--active {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--panel) inset;
+}
+.addacct__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+.addacct__submit {
+  border: none;
+  background: var(--green);
+  color: #fff;
+  border-radius: 8px;
+  padding: 11px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.addacct__submit:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.addacct__connect {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+}
+.addacct__qr {
+  background: #fff;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  line-height: 0;
+}
+.addacct__steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+  text-align: left;
+}
+.addacct__hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
