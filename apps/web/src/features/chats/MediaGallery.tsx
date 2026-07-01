@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WaMediaItem } from '@app/shared-types';
 import { useAppSelector } from '../../app/hooks';
 import { selectAccessToken } from '../auth/authSlice';
+import { authedMediaUrl } from '../../lib/mediaUrl';
 import { useGetChatMediaQuery } from './chatsApi';
 
 interface Props {
   jid: string;
+  accountId: string;
 }
 
 // Emoji représentatif par type de média (tuiles audio/document).
@@ -29,11 +31,6 @@ const KIND_LABEL: Record<WaMediaItem['kind'], string> = {
 // data URI à partir d'une miniature base64 (aperçu instantané).
 function thumbDataUri(thumb: string | null): string | undefined {
   return thumb ? `data:image/jpeg;base64,${thumb}` : undefined;
-}
-
-// URL média servie par le backend (auth par token en query ?t=).
-function mediaSrc(url: string | null, token: string | null): string | null {
-  return url && token ? url + '?t=' + encodeURIComponent(token) : null;
 }
 
 // Cible de la lightbox: image affichée en grand ou vidéo lue en grand.
@@ -117,7 +114,7 @@ function GalleryTile({
   const [failed, setFailed] = useState(false);
 
   const thumb = thumbDataUri(item.thumbnailBase64);
-  const src = mediaSrc(item.url, token);
+  const src = authedMediaUrl(item.url, token, item.accountId);
   const isImageLike = item.kind === 'image' || item.kind === 'sticker';
   const isVideo = item.kind === 'video';
 
@@ -193,9 +190,12 @@ function GalleryTile({
 }
 
 // Grille de vignettes des médias d'une discussion + lightbox plein écran.
-export default function MediaGallery({ jid }: Props) {
+export default function MediaGallery({ jid, accountId }: Props) {
   const token = useAppSelector(selectAccessToken);
-  const { data: items, isLoading, isError } = useGetChatMediaQuery(jid);
+  const { data: items, isLoading, isError } = useGetChatMediaQuery({
+    accountId,
+    jid,
+  });
   const [target, setTarget] = useState<LightboxTarget | null>(null);
 
   const closeLightbox = useCallback(() => setTarget(null), []);

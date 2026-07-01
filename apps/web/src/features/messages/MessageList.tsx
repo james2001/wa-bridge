@@ -12,6 +12,7 @@ import MessageBubble from './MessageBubble';
 
 interface Props {
   jid: string;
+  accountId: string;
 }
 
 // Seuil (px) sous lequel on considère l'utilisateur « collé » au bas: en
@@ -20,10 +21,11 @@ const NEAR_BOTTOM_PX = 150;
 // Seuil (px) du haut déclenchant le chargement de l'historique plus ancien.
 const NEAR_TOP_PX = 80;
 
-export default function MessageList({ jid }: Props) {
+export default function MessageList({ jid, accountId }: Props) {
   // `before` pilote la pagination: undefined = page la plus récente.
   const [before, setBefore] = useState<number | undefined>(undefined);
   const { data, isLoading, isError, isFetching } = useGetMessagesQuery({
+    accountId,
     jid,
     before,
   });

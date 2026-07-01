@@ -10,6 +10,7 @@ import { archiveChat, muteChat } from '../../services/socket';
 interface Props {
   chat: WaChat | undefined;
   jid: string;
+  accountId: string;
 }
 
 function presenceText(p: WaPresence | undefined): string | null {
@@ -26,9 +27,9 @@ function presenceText(p: WaPresence | undefined): string | null {
   }
 }
 
-export default function ChatHeader({ chat, jid }: Props) {
+export default function ChatHeader({ chat, jid, accountId }: Props) {
   const dispatch = useAppDispatch();
-  const presence = useAppSelector(selectPresence(jid));
+  const presence = useAppSelector(selectPresence(accountId, jid));
   const infoOpen = useAppSelector(selectInfoPanelOpen);
   const title = chat ? chatTitle(chat) : prettyJid(jid);
   const subtitle = presenceText(presence) ?? prettyJid(jid);
@@ -57,6 +58,7 @@ export default function ChatHeader({ chat, jid }: Props) {
           name={title}
           jid={jid}
           avatarUrl={chat?.avatarUrl ?? null}
+          accountId={accountId}
           size="sm"
         />
         <div className="chathdr__info">
@@ -78,7 +80,7 @@ export default function ChatHeader({ chat, jid }: Props) {
           className="iconbtn"
           title={muted ? 'Réactiver les notifications' : 'Couper les notifications'}
           disabled={!chat}
-          onClick={() => muteChat(jid, !muted)}
+          onClick={() => muteChat(accountId, jid, !muted)}
         >
           {muted ? '🔔' : '🔇'}
         </button>
@@ -86,7 +88,7 @@ export default function ChatHeader({ chat, jid }: Props) {
           className="iconbtn"
           title={archived ? 'Désarchiver' : 'Archiver'}
           disabled={!chat}
-          onClick={() => archiveChat(jid, !archived)}
+          onClick={() => archiveChat(accountId, jid, !archived)}
         >
           {archived ? '📤' : '🗄'}
         </button>

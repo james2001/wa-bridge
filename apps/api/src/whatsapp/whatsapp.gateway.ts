@@ -15,6 +15,8 @@ import type {
   ClientToServerEvents,
   ServerToClientEvents,
   SocketData,
+  WaAccount,
+  WaAccountsResponse,
   WaChat,
   WaConnection,
   WaMessage,
@@ -80,6 +82,10 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
     // TODO multi-compte: router vers une room `account:<accountId>`.
     if (!this.forwardingWired) {
       this.forwardingWired = true;
+      // Liste des comptes changée (ajout / suppression / renommage).
+      this.wa.on('accounts', (p: WaAccountsResponse) =>
+        this.server.emit('wa:accounts', p),
+      );
       // conn.accountId déjà présent dans le DTO.
       this.wa.on('connection', (_accountId: string, conn: WaConnection) =>
         this.server.emit('wa:connection', conn),
@@ -121,9 +127,25 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
 
   async handleConnection(socket: AppSocket): Promise<void> {
     this.logger.log(`Client socket connecté: ${socket.id}`);
-    // État courant + discussions immédiatement à la connexion d'un client.
-    // Phase 1: compte 'default' (le front n'expose pas encore le multi-compte).
-    socket.emit('wa:connection', this.wa.getConnection('default'));
+    // Comptes + état de connexion de CHACUN, immédiatement à la connexion d'un
+    // client (le sélecteur de compte s'affiche avec le bon statut).
+    let accounts: WaAccount[] = [];
+    try {
+      const res = await this.wa.listAccounts();
+      accounts = res.accounts;
+      socket.emit('wa:accounts', res);
+    } catch (e) {
+      this.logger.error(`listAccounts au connect: ${e}`);
+    }
+    // Émet la connexion des seuls comptes AVEC session live (peek: lecture
+    // seule, ne crée pas de session fantôme). Un compte délié non reconnecté
+    // n'émet rien -> le front dérive son statut de la liste (puce hors ligne).
+    const ids = accounts.length ? accounts.map((a) => a.id) : ['default'];
+    for (const id of ids) {
+      const conn = this.wa.peekConnection(id);
+      if (conn) socket.emit('wa:connection', conn);
+    }
+    // Discussions du compte par défaut (les autres se chargent au switch).
     try {
       const chats = await this.wa.listChats('default');
       socket.emit('wa:chats', { accountId: 'default', chats });
@@ -208,5 +230,51 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
   ): Promise<{ ok: boolean }> {
     await this.wa.logout(input?.accountId ?? 'default');
     return { ok: true };
+  }
+
+  @SubscribeMessage('wa:account-create')
+  async onAccountCreate(
+    @MessageBody() input: { label: string; color?: string },
+  ): Promise<{ ok: boolean; account?: WaAccount; error?: string }> {
+    try {
+      const account = await this.wa.createAccount(input.label, input.color);
+      return { ok: true, account };
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : 'create_failed',
+      };
+    }
+  }
+
+  @SubscribeMessage('wa:account-connect')
+  async onAccountConnect(
+    @MessageBody() input: { accountId: string },
+  ): Promise<{ ok: boolean }> {
+    await this.wa.connectAccount(input.accountId);
+    return { ok: true };
+  }
+
+  @SubscribeMessage('wa:account-rename')
+  async onAccountRename(
+    @MessageBody() input: { accountId: string; label?: string; color?: string },
+  ): Promise<{ ok: boolean }> {
+    await this.wa.renameAccount(input.accountId, input.label, input.color);
+    return { ok: true };
+  }
+
+  @SubscribeMessage('wa:account-delete')
+  async onAccountDelete(
+    @MessageBody() input: { accountId: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await this.wa.deleteAccount(input.accountId);
+      return { ok: true };
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : 'delete_failed',
+      };
+    }
   }
 }
