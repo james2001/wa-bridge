@@ -1,18 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
 import { WaMessageStatus, WaMessageType } from '@app/shared-types';
-import type { WaMessage } from '@app/shared-types';
+import type { WaAccount, WaMessage } from '@app/shared-types';
 import { useAppDispatch } from '../../app/hooks';
 import { sendText, setTyping } from '../../services/socket';
 import { http } from '../../services/http';
 import { upsertMessage } from './messagesApi';
+import { upsertPersonMessage } from '../people/peopleApi';
 
 interface Props {
   chatJid: string;
   accountId: string;
+  // Vue fusionnée : comptes candidats pour l'envoi. Si fourni, on affiche un
+  // sélecteur (quand > 1 compte) et on reflète l'écho dans la timeline fusionnée
+  // (chatJid = JID pn de la personne). Absent = vue par compte (comportement historique).
+  accountOptions?: WaAccount[];
 }
 
-export default function Composer({ chatJid, accountId }: Props) {
+export default function Composer({ chatJid, accountId, accountOptions }: Props) {
   const dispatch = useAppDispatch();
+  const merged = accountOptions != null;
+  // Compte émetteur : en fusionné, choisi par l'utilisateur (défaut = accountId,
+  // càd le compte le plus récent de la personne).
+  const [sender, setSender] = useState(accountId);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -28,25 +37,39 @@ export default function Composer({ chatJid, accountId }: Props) {
     }
     if (typingRef.current) {
       typingRef.current = false;
-      setTyping(accountId, chatJid, false);
+      setTyping(sender, chatJid, false);
     }
   };
 
   // Arrête le 'composing' au changement de discussion / démontage.
   useEffect(() => () => stopTyping(), [chatJid]);
 
+  // Reflète un message (optimistic/ack/erreur) dans les caches: par-compte, et
+  // aussi la timeline fusionnée quand on est en mode fusionné.
+  const mirror = (msg: WaMessage) => {
+    dispatch(upsertMessage(msg.accountId, chatJid, msg));
+    if (merged) dispatch(upsertPersonMessage(msg));
+  };
+
   const onChange = (value: string) => {
     setText(value);
     if (value.length > 0) {
       if (!typingRef.current) {
         typingRef.current = true;
-        setTyping(accountId, chatJid, true);
+        setTyping(sender, chatJid, true);
       }
       if (typingTimeout.current) clearTimeout(typingTimeout.current);
       typingTimeout.current = setTimeout(stopTyping, 2000);
     } else {
       stopTyping();
     }
+  };
+
+  // Changement de compte émetteur (fusionné) : on arrête d'abord le 'composing'
+  // sur l'ancien compte pour ne pas le laisser suspendu.
+  const onChangeSender = (id: string) => {
+    stopTyping();
+    setSender(id);
   };
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -57,8 +80,8 @@ export default function Composer({ chatJid, accountId }: Props) {
     stopTyping();
     const clientId = crypto.randomUUID();
     const optimistic: WaMessage = {
-      // L'écho optimistic appartient au compte actif (émetteur).
-      accountId,
+      // L'écho optimistic appartient au compte émetteur choisi.
+      accountId: sender,
       id: clientId,
       chatJid,
       fromMe: true,
@@ -76,27 +99,22 @@ export default function Composer({ chatJid, accountId }: Props) {
 
     setText('');
     setSending(true);
-    dispatch(upsertMessage(accountId, chatJid, optimistic));
+    mirror(optimistic);
 
     try {
-      const ack = await sendText({ accountId, chatJid, text: value, clientId });
+      const ack = await sendText({
+        accountId: sender,
+        chatJid,
+        text: value,
+        clientId,
+      });
       if (ack.ok && ack.message) {
-        dispatch(upsertMessage(accountId, chatJid, ack.message));
+        mirror(ack.message);
       } else {
-        dispatch(
-          upsertMessage(accountId, chatJid, {
-            ...optimistic,
-            status: WaMessageStatus.ERROR,
-          }),
-        );
+        mirror({ ...optimistic, status: WaMessageStatus.ERROR });
       }
     } catch {
-      dispatch(
-        upsertMessage(accountId, chatJid, {
-          ...optimistic,
-          status: WaMessageStatus.ERROR,
-        }),
-      );
+      mirror({ ...optimistic, status: WaMessageStatus.ERROR });
     } finally {
       setSending(false);
     }
@@ -132,7 +150,7 @@ export default function Composer({ chatJid, accountId }: Props) {
       await http.post(
         `/wa/chats/${encodeURIComponent(chatJid)}/media`,
         form,
-        { params: { accountId } },
+        { params: { accountId: sender } },
       );
     } catch {
       setUploadError(true);
@@ -143,6 +161,23 @@ export default function Composer({ chatJid, accountId }: Props) {
 
   return (
     <form className="composer" onSubmit={onSubmit}>
+      {/* Sélecteur de compte émetteur (vue fusionnée, > 1 compte). */}
+      {accountOptions && accountOptions.length > 1 && (
+        <select
+          className="composer__acct"
+          value={sender}
+          onChange={(e) => onChangeSender(e.target.value)}
+          disabled={sending || uploading}
+          title="Envoyer depuis le compte"
+          aria-label="Compte émetteur"
+        >
+          {accountOptions.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.label}
+            </option>
+          ))}
+        </select>
+      )}
       <input
         ref={fileInputRef}
         type="file"
