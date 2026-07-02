@@ -87,6 +87,9 @@ model WaMessage {
   @@id([accountId, chatJid, id])
   @@index([accountId, chatJid, sentAt])
   @@index([accountId, chatJid, fileSha256])
+  // Vue fusionnée par personne (Phase 3) : timeline cross-compte triée par date
+  // (WHERE chat_jid = pn ORDER BY sent_at), sans filtre account_id en tête.
+  @@index([chatJid, sentAt])
   @@map("wa_messages")
 }
 

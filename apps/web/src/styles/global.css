@@ -450,6 +450,10 @@ button {
   flex-shrink: 0;
 }
 .convitem__preview {
+  /* flex:1 + min-width:0 : absorbe l'espace libre (pousse pastilles+badge à
+     droite en vue fusionnée) et garde l'ellipsis. */
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   color: var(--text-muted);
   overflow: hidden;
@@ -1556,4 +1560,78 @@ a.gallery__file:hover {
   margin: 0;
   color: var(--text-muted);
   font-size: 14px;
+}
+
+/* ---------- Vue fusionnée par personne (Phase 3) ---------- */
+
+/* Bascule Comptes <-> Fusionné (segmented control) dans la barre latérale. */
+.viewtoggle {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 0;
+  background: var(--panel);
+}
+.viewtoggle__btn {
+  flex: 1;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.viewtoggle__btn:hover {
+  background: #e5e9eb;
+}
+.viewtoggle__btn:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+}
+.viewtoggle__btn--active {
+  background: var(--green-light);
+  color: var(--green-dark);
+  border-color: var(--green);
+}
+
+/* Pastilles des comptes couverts par une personne (liste fusionnée). */
+.convitem__accts {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+.convitem__acctdot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+/* Petit label « via <compte> » sous une bulle (timeline fusionnée). */
+.bubble__account {
+  display: block;
+  clear: both;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* En-tête personne non interactif (pas de hover/pointeur). */
+.chathdr__id--static {
+  cursor: default;
+}
+.chathdr__id--static:hover {
+  background: transparent;
+}
+
+/* Bandeau bas de la vue fusionnée (lecture seule, remplace le composer). */
+.readonly-note {
+  padding: 12px 16px;
+  background: var(--header);
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
 }

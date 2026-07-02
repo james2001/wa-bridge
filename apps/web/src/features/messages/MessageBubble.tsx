@@ -9,6 +9,11 @@ interface Props {
   message: WaMessage;
   // Message cité résolu (réponse). null = quotedId présent mais introuvable.
   quoted?: WaMessage | null;
+  // Vue fusionnée par personne : affiche « via <compte> » sous la bulle. Activé
+  // uniquement quand la conversation couvre plusieurs comptes (cf. PersonTimeline).
+  showAccount?: boolean;
+  accountLabel?: string;
+  accountColor?: string | null;
 }
 
 // Réaction agrégée pour l'affichage: un emoji, son compteur, et un drapeau
@@ -133,7 +138,13 @@ function quotedPreview(q: WaMessage): string {
   }
 }
 
-export default function MessageBubble({ message, quoted }: Props) {
+export default function MessageBubble({
+  message,
+  quoted,
+  showAccount = false,
+  accountLabel,
+  accountColor,
+}: Props) {
   const isOwn = message.fromMe;
   // Panneau « Infos du message » (accusés de réception), messages sortants.
   const [infoOpen, setInfoOpen] = useState(false);
@@ -214,6 +225,15 @@ export default function MessageBubble({ message, quoted }: Props) {
             </span>
           )}
         </span>
+        {showAccount && accountLabel && (
+          <span
+            className="bubble__account"
+            style={accountColor ? { color: accountColor } : undefined}
+            title={`Compte : ${accountLabel}`}
+          >
+            via {accountLabel}
+          </span>
+        )}
         {reactions.length > 0 && (
           <div className="bubble__reactions">
             {reactions.map((r) => (

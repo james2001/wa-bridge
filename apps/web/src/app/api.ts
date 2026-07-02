@@ -63,6 +63,14 @@ const baseQueryWithReauth: BaseQueryFn<
 export const api = createApi({
   reducerPath: 'api',
   baseQuery: baseQueryWithReauth,
-  tagTypes: ['WaChats', 'WaMessages', 'WaStatus', 'WaAccounts'],
+  tagTypes: [
+    'WaChats',
+    'WaMessages',
+    'WaStatus',
+    'WaAccounts',
+    // Vue fusionnée par personne (Phase 3).
+    'People',
+    'PersonTimeline',
+  ],
   endpoints: () => ({}),
 });

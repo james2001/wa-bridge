@@ -23,6 +23,13 @@ import {
   updateMessageStatus,
   updateReactions,
 } from '../features/messages/messagesApi';
+import {
+  personKey,
+  removePersonMessage,
+  upsertPersonMessage,
+  updatePersonMessageStatus,
+  updatePersonReactions,
+} from '../features/people/peopleApi';
 import { api } from '../app/api';
 import { connectSocket, disconnectSocket } from '../services/socket';
 
@@ -51,16 +58,25 @@ export function useSocketBridge(): void {
     };
     const onChats = (p: { accountId: string; chats: WaChat[] }) => {
       dispatch(setChats(p.accountId, p.chats));
+      // Boîte fusionnée: la synchro d'une liste change aperçus / non-lus / personnes.
+      dispatch(api.util.invalidateTags([{ type: 'People', id: 'LIST' }]));
     };
     const onChatUpsert = (p: { accountId: string; chat: WaChat }) => {
       dispatch(upsertChat(p.accountId, p.chat));
+      // Reflète non-lus (lecture depuis le téléphone) / mute / archive / nom /
+      // aperçu de la personne dans la boîte fusionnée.
+      dispatch(api.util.invalidateTags([{ type: 'People', id: 'LIST' }]));
     };
     const onMessage = (p: { accountId: string; message: WaMessage }) => {
       dispatch(upsertMessage(p.accountId, p.message.chatJid, p.message));
-      // Reflète le nouveau dernier message / unread dans la liste du compte.
+      // Vue fusionnée: patche la timeline de la personne (no-op si non observée).
+      dispatch(upsertPersonMessage(p.message));
+      // Reflète le nouveau dernier message / unread dans la liste du compte…
       dispatch(
         api.util.invalidateTags([{ type: 'WaChats', id: p.accountId }]),
       );
+      // …et dans la boîte fusionnée (aperçu / ordre / non-lus agrégés).
+      dispatch(api.util.invalidateTags([{ type: 'People', id: 'LIST' }]));
     };
     const onMessageStatus = (p: {
       accountId: string;
@@ -69,6 +85,9 @@ export function useSocketBridge(): void {
       status: WaMessageStatus;
     }) => {
       dispatch(updateMessageStatus(p.accountId, p.chatJid, p.id, p.status));
+      dispatch(
+        updatePersonMessageStatus(p.accountId, p.chatJid, p.id, p.status),
+      );
     };
     const onMessageDeleted = (p: {
       accountId: string;
@@ -76,6 +95,8 @@ export function useSocketBridge(): void {
       chatJid: string;
     }) => {
       dispatch(removeMessage(p.accountId, p.chatJid, p.id));
+      dispatch(removePersonMessage(p.accountId, p.chatJid, p.id));
+      dispatch(api.util.invalidateTags([{ type: 'People', id: 'LIST' }]));
     };
     const onReaction = (p: {
       accountId: string;
@@ -86,6 +107,14 @@ export function useSocketBridge(): void {
       dispatch(
         updateReactions(p.accountId, p.chatJid, p.messageId, p.reactions),
       );
+      dispatch(
+        updatePersonReactions(
+          p.accountId,
+          p.chatJid,
+          p.messageId,
+          p.reactions,
+        ),
+      );
     };
     const onPresence = (p: WaPresence) => {
       dispatch(setPresence(p));
@@ -95,12 +124,18 @@ export function useSocketBridge(): void {
       chatJid: string | null;
     }) => {
       dispatch(
-        api.util.invalidateTags([{ type: 'WaChats', id: p.accountId }]),
+        api.util.invalidateTags([
+          { type: 'WaChats', id: p.accountId },
+          // Boîte fusionnée: le sync peut changer aperçus / personnes.
+          { type: 'People', id: 'LIST' },
+        ]),
       );
       if (p.chatJid) {
         dispatch(
           api.util.invalidateTags([
             { type: 'WaMessages', id: cacheKey(p.accountId, p.chatJid) },
+            // Timeline fusionnée de cette personne (refetch si observée).
+            { type: 'PersonTimeline', id: personKey(p.chatJid) },
           ]),
         );
       }
