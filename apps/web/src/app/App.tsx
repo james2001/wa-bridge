@@ -3,8 +3,11 @@ import { ConnectionState } from '@app/shared-types';
 import { useAppSelector } from './hooks';
 import { selectIsAuthenticated } from '../features/auth/authSlice';
 import { useRefreshMutation } from '../features/auth/authApi';
-import { useGetStatusQuery } from '../features/whatsapp/waApi';
-import { selectConnection } from '../features/whatsapp/waSlice';
+import {
+  useGetAccountsQuery,
+  useGetStatusQuery,
+} from '../features/whatsapp/waApi';
+import { selectConnections } from '../features/whatsapp/waSlice';
 import { useSocketBridge } from '../hooks/useSocketBridge';
 import LoginPage from '../features/auth/LoginPage';
 import ConnectionScreen from '../features/whatsapp/ConnectionScreen';
@@ -18,13 +21,20 @@ function Splash() {
   );
 }
 
-// Rendu uniquement quand l'app est authentifiée: charge l'état WhatsApp et
-// affiche le QR ou l'interface selon l'état de la connexion.
+// Rendu uniquement quand l'app est authentifiée: charge l'état WhatsApp puis
+// affiche l'interface dès qu'AU MOINS UN compte est lié (OPEN). L'onboarding
+// (ConnectionScreen -> QR du compte principal) ne s'affiche que si AUCUN compte
+// n'est utilisable, pour ne pas rendre un compte secondaire lié inaccessible
+// quand le compte principal décroche temporairement.
 function AuthedApp() {
   useGetStatusQuery();
-  const connection = useAppSelector(selectConnection);
+  useGetAccountsQuery();
+  const connections = useAppSelector(selectConnections);
+  const anyOpen = Object.values(connections).some(
+    (c) => c.state === ConnectionState.OPEN,
+  );
 
-  if (connection.state !== ConnectionState.OPEN) {
+  if (!anyOpen) {
     return <ConnectionScreen />;
   }
   return <AppLayout />;

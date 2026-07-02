@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import {
   mkdir,
   readFile,
@@ -16,7 +17,7 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import makeWASocket, {
   DisconnectReason,
   downloadMediaMessage,
@@ -47,6 +48,8 @@ import {
   type WaMessage,
   type WaMessageInfoResponse,
   type WaMessageReceipt,
+  type WaPeopleResponse,
+  type WaPerson,
   type WaPresence,
   type WaReaction,
 } from '@app/shared-types';
@@ -72,6 +75,8 @@ const cleanName = (s: unknown): string | null => {
 // Événements domaine émis par le service (consommés par la gateway). Chaque
 // signature porte `accountId` en 1er argument (routage multi-compte).
 export interface WhatsappEvents {
+  // Liste des comptes changée (ajout / suppression / renommage).
+  accounts: (p: WaAccountsResponse) => void;
   connection: (accountId: string, conn: WaConnection) => void;
   message: (accountId: string, msg: WaMessage) => void;
   'message-status': (
@@ -134,6 +139,10 @@ export class WhatsappService
   private baseMediaDir = '/data/media-cache';
   // État runtime par compte. En Phase 1, une seule clé: 'default'.
   private readonly sessions = new Map<string, AccountSession>();
+  // Comptes supprimés dans ce process: empêche toute reconnexion "zombie"
+  // déclenchée par un événement Baileys tardif (close/loggedOut) après purge.
+  // Les ids étant des UUID, ils ne sont jamais réutilisés -> tombstone durable.
+  private readonly removedAccounts = new Set<string>();
 
   private static readonly LOCAL_META_GUARD_MS = 20_000;
   private static readonly AVATAR_MAX_CONCURRENT = 3;
@@ -184,6 +193,19 @@ export class WhatsappService
       .catch((e) => this.logger.warn(`seed compte default: ${e}`));
     await this.loadLidMap(DEFAULT_ACCOUNT_ID);
     await this.connect(DEFAULT_ACCOUNT_ID);
+
+    // Reconnecte les comptes secondaires déjà liés (hors 'default', déjà lancé,
+    // et hors ceux explicitement déliés -> status 'logged_out'). Non bloquant.
+    const others = await this.prisma.waAccount
+      .findMany({ where: { id: { not: DEFAULT_ACCOUNT_ID } } })
+      .catch(() => []);
+    for (const acc of others) {
+      if ((acc.status as ConnectionState) === ConnectionState.LOGGED_OUT) {
+        continue;
+      }
+      await this.loadLidMap(acc.id);
+      void this.connect(acc.id);
+    }
   }
 
   onModuleDestroy(): void {
@@ -246,8 +268,35 @@ export class WhatsappService
     return s;
   }
 
+  // Vrai SI la session porte un cycle de connexion RÉEL (socket créé, ou
+  // connexion en cours), par opposition à une session FANTÔME fabriquée par
+  // ensureSession depuis un chemin de LECTURE (listChats/chatRowToDto, markRead…)
+  // pour un compte sans connexion: celle-ci a sock=null & connecting=false et son
+  // connection.state 'connecting' ne doit JAMAIS écraser le vrai statut DB.
+  private isLiveSession(s: AccountSession): boolean {
+    return s.sock !== null || s.connecting;
+  }
+
+  // Connexion live d'un compte SANS créer de session (lecture seule). Renvoie
+  // null si aucune session RÉELLE n'existe (compte délié / non reconnecté au
+  // boot, ou session fantôme issue d'un chemin de lecture).
+  peekConnection(accountId: string): WaConnection | null {
+    const s = this.sessions.get(accountId);
+    return s && this.isLiveSession(s) ? s.connection : null;
+  }
+
+  // Connexion d'un compte. NON MUTANT: ne crée PAS de session fantôme pour un
+  // compte sans session live (sinon on écraserait un vrai statut 'logged_out'
+  // stocké par un placeholder 'connecting'). Repli sur un DTO 'connecting'.
   getConnection(accountId = DEFAULT_ACCOUNT_ID): WaConnection {
-    return this.ensureSession(accountId).connection;
+    return (
+      this.peekConnection(accountId) ?? {
+        accountId,
+        state: ConnectionState.CONNECTING,
+        qr: null,
+        me: null,
+      }
+    );
   }
 
   private setConnection(
@@ -255,8 +304,30 @@ export class WhatsappService
     patch: Partial<WaConnection>,
   ): void {
     const s = this.ensureSession(accountId);
-    s.connection = { ...s.connection, ...patch, accountId };
+    const prev = s.connection;
+    s.connection = { ...prev, ...patch, accountId };
     this.emit('connection', accountId, s.connection);
+    // Persiste l'état "durable" (status + phoneJid) sur les transitions utiles
+    // pour survivre au redémarrage et piloter la reconnexion au boot. On ignore
+    // les états transitoires QR/CONNECTING (le QR ne se persiste pas). Le 'default'
+    // reste toujours reconnecté au boot: pas besoin de persister son status.
+    if (
+      accountId !== DEFAULT_ACCOUNT_ID &&
+      s.connection.state !== prev.state &&
+      s.connection.state !== ConnectionState.QR &&
+      s.connection.state !== ConnectionState.CONNECTING
+    ) {
+      const phoneJid = s.connection.me?.jid ?? null;
+      void this.prisma.waAccount
+        .update({
+          where: { id: accountId },
+          data: {
+            status: s.connection.state,
+            ...(phoneJid ? { phoneJid } : {}),
+          },
+        })
+        .catch(() => undefined);
+    }
   }
 
   // Liste des comptes du pont (REST GET /wa/accounts). Le 'default' reflète
@@ -266,7 +337,10 @@ export class WhatsappService
       .findMany({ orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] })
       .catch(() => []);
     const accounts: WaAccount[] = rows.map((r) => {
-      const live = this.sessions.get(r.id);
+      const s = this.sessions.get(r.id);
+      // On ne fait confiance à la session QUE si elle est réelle (isLiveSession):
+      // une session fantôme (chemin de lecture) ne doit pas écraser le statut DB.
+      const live = s && this.isLiveSession(s) ? s : null;
       const status = live
         ? live.connection.state
         : (r.status as ConnectionState);
@@ -284,9 +358,163 @@ export class WhatsappService
     return { accounts, defaultAccountId: DEFAULT_ACCOUNT_ID };
   }
 
+  // Diffuse la liste des comptes à jour (après create/delete/rename).
+  private async emitAccounts(): Promise<void> {
+    this.emit('accounts', await this.listAccounts());
+  }
+
+  // Crée un nouveau compte et lance sa connexion (un QR sera émis via
+  // 'wa:connection' pour l'id renvoyé). Le label est nettoyé; couleur optionnelle.
+  async createAccount(label: string, color?: string): Promise<WaAccount> {
+    const cleanLabel = cleanName(label) ?? 'Nouveau compte';
+    // id court, stable et sûr comme nom de sous-dossier (auth/media).
+    const id = `acc_${randomUUID().slice(0, 8)}`;
+    const agg = await this.prisma.waAccount
+      .aggregate({ _max: { sortOrder: true } })
+      .catch(() => null);
+    const sortOrder = (agg?._max.sortOrder ?? 0) + 1;
+    const row = await this.prisma.waAccount.create({
+      data: {
+        id,
+        label: cleanLabel,
+        color: color ?? null,
+        status: ConnectionState.CONNECTING,
+        isDefault: false,
+        sortOrder,
+      },
+    });
+    // Prépare la session + démarre la connexion (émettra le QR).
+    await this.loadLidMap(id);
+    void this.connect(id);
+    await this.emitAccounts();
+    return {
+      id: row.id,
+      label: row.label,
+      color: row.color,
+      phoneJid: null,
+      status: ConnectionState.CONNECTING,
+      isDefault: false,
+      sortOrder: row.sortOrder,
+    };
+  }
+
+  // (Re)lance la connexion d'un compte existant (ex: régénérer un QR).
+  async connectAccount(accountId = DEFAULT_ACCOUNT_ID): Promise<void> {
+    const s = this.ensureSession(accountId);
+    s.destroyed = false;
+    await this.connect(accountId);
+  }
+
+  // Renomme / recolore un compte (couleur mise à jour seulement si fournie).
+  async renameAccount(
+    accountId: string,
+    label?: string,
+    color?: string,
+  ): Promise<void> {
+    const data: Prisma.WaAccountUpdateInput = {};
+    const cleanLabel = cleanName(label);
+    if (cleanLabel) data.label = cleanLabel;
+    if (color !== undefined) data.color = color || null;
+    if (Object.keys(data).length === 0) return;
+    await this.prisma.waAccount
+      .update({ where: { id: accountId }, data })
+      .catch((e) => this.logger.warn(`renameAccount ${accountId}: ${e}`));
+    await this.emitAccounts();
+  }
+
+  // Valide un id de compte destiné à une opération DESTRUCTIVE. Rejette le
+  // compte principal et tout id non conforme (vide, '.', '..', séparateurs de
+  // chemin…) pour empêcher toute traversée vers la racine partagée. Les ids
+  // générés sont de la forme `acc_<hex>` -> ce motif les couvre.
+  private assertDeletableAccountId(accountId: string): void {
+    if (accountId === DEFAULT_ACCOUNT_ID) {
+      throw new Error('Le compte principal ne peut pas être supprimé.');
+    }
+    if (!/^[A-Za-z0-9_-]{3,64}$/.test(accountId)) {
+      throw new Error('Identifiant de compte invalide.');
+    }
+  }
+
+  // Défense en profondeur: garantit que `dir` est STRICTEMENT sous `base`
+  // (jamais la racine elle-même), avant tout rm récursif.
+  private assertUnderBase(dir: string, base: string): void {
+    const rel = relative(base, dir);
+    if (!rel || rel === '..' || rel.startsWith('..') || isAbsolute(rel)) {
+      throw new Error('Chemin de compte hors du dossier autorisé.');
+    }
+  }
+
+  // Déliaison best-effort bornée dans le temps (logout() peut ne jamais répondre
+  // si le socket est déjà mort) -> ne bloque pas la suppression / l'ACK client.
+  private async safeLogout(s: AccountSession): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const guard = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, 4000);
+      // Ne pas retenir l'event loop si logout() gagne la course (arrêt gracieux).
+      timer.unref?.();
+    });
+    try {
+      await Promise.race([s.sock?.logout() ?? Promise.resolve(), guard]);
+    } catch {
+      /* déjà hors ligne */
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  // Supprime un compte: purge des données scopées + dossiers auth/média, puis
+  // déliaison. Interdit sur 'default'. La transaction DB est le POINT DE COMMIT:
+  // si elle échoue, on lève (rien de destructif n'a eu lieu) -> l'ACK renvoie
+  // ok:false et l'état reste cohérent.
+  async deleteAccount(accountId: string): Promise<void> {
+    this.assertDeletableAccountId(accountId);
+    const exists = await this.prisma.waAccount.findUnique({
+      where: { id: accountId },
+    });
+    if (!exists) {
+      throw new Error('Compte introuvable.');
+    }
+    const authDir = this.authDirFor(accountId);
+    const mediaDir = this.mediaDirFor(accountId);
+    this.assertUnderBase(authDir, this.baseAuthDir);
+    this.assertUnderBase(mediaDir, this.baseMediaDir);
+
+    // 1) Purge DB atomique. Si elle échoue, on PROPAGE (pas de .catch): aucune
+    //    session n'a été fermée et aucun dossier supprimé -> état intact.
+    await this.prisma.$transaction([
+      this.prisma.waMessage.deleteMany({ where: { accountId } }),
+      this.prisma.waChat.deleteMany({ where: { accountId } }),
+      this.prisma.waContact.deleteMany({ where: { accountId } }),
+      this.prisma.waLidMap.deleteMany({ where: { accountId } }),
+      this.prisma.waAccount.delete({ where: { id: accountId } }),
+    ]);
+
+    // 2) Point de commit franchi: nettoyage best-effort (session + dossiers).
+    //    Tombstone AVANT teardown: un événement Baileys tardif ne peut plus
+    //    relancer la connexion (cf. garde dans connect()).
+    this.removedAccounts.add(accountId);
+    const s = this.sessions.get(accountId);
+    if (s) {
+      s.destroyed = true;
+      await this.safeLogout(s);
+      try {
+        s.sock?.end(undefined);
+      } catch {
+        /* noop */
+      }
+      this.sessions.delete(accountId);
+    }
+    // Dossiers auth/média du compte (sous-dossiers dédiés, jamais la racine).
+    await rm(authDir, { recursive: true, force: true }).catch(() => undefined);
+    await rm(mediaDir, { recursive: true, force: true }).catch(() => undefined);
+    await this.emitAccounts();
+  }
+
   // --- Connexion / cycle de vie ---
 
   private async connect(accountId = DEFAULT_ACCOUNT_ID): Promise<void> {
+    // Compte supprimé: ne jamais (re)connecter (garde anti-zombie).
+    if (this.removedAccounts.has(accountId)) return;
     const s = this.ensureSession(accountId);
     if (s.connecting || s.destroyed) return;
     s.connecting = true;
@@ -1950,12 +2178,11 @@ export class WhatsappService
       orderBy: { sentAt: 'desc' },
       take: limit + 1,
     });
-    const hasMore = rows.length > limit;
-    const page = rows.slice(0, limit).reverse();
+    const { page, hasMore, nextBefore } = this.paginateBySecond(rows, limit);
     return {
       messages: page.map((r) => this.msgRowToDto(accountId, r)),
       hasMore,
-      nextBefore: hasMore ? page[0]?.sentAt.getTime() ?? null : null,
+      nextBefore,
     };
   }
 
@@ -2054,6 +2281,215 @@ export class WhatsappService
       sentAt: row.sentAt.getTime(),
       receipts,
     };
+  }
+
+  // --- Vue fusionnée par personne (multi-compte) ---
+
+  // Personnes (contacts 1:1) agrégées à travers TOUS les comptes liés, pour la
+  // vue fusionnée (Phase 3). Identité = JID pn canonique : le même numéro vu par
+  // plusieurs comptes = une seule personne. Groupes exclus ; discussions ignorées
+  // (status/newsletter) et fantômes (@lid sans nom ni aperçu) écartées.
+  async listPeople(): Promise<WaPeopleResponse> {
+    const rows = await this.prisma.waChat.findMany({
+      where: { isGroup: false },
+    });
+    // Noms du carnet d'adresses, préférés au `name` de discussion (qui peut être
+    // un numéro masqué poussé par WhatsApp) — même préférence que chatDisplayName/
+    // nameFor. Chargés une fois, indexés par JID canonique ; `name` > `pushName`.
+    const contactRows = await this.prisma.waContact.findMany({
+      where: { isGroup: false },
+      select: { accountId: true, jid: true, name: true, pushName: true },
+    });
+    // Un nom « réel » contient une lettre ; un placeholder masqué poussé par
+    // WhatsApp (« +33∙∙∙∙∙84 », « +33 7 80 96 17 49 ») n'en a pas. On privilégie
+    // toujours un nom réel, quel que soit l'ordre des lignes ; repli 1er non vide.
+    const hasLetter = (s: string | null): boolean =>
+      s !== null && /\p{L}/u.test(s);
+    const bestName = (
+      ...cands: (string | null | undefined)[]
+    ): string | null => {
+      const cleaned = cands.map((c) => cleanName(c));
+      return cleaned.find(hasLetter) ?? cleaned.find((c) => c !== null) ?? null;
+    };
+    const contactByJid = new Map<
+      string,
+      { name: string | null; push: string | null }
+    >();
+    for (const c of contactRows) {
+      const jid = this.canonicalJid(c.accountId, c.jid) ?? c.jid;
+      const e = contactByJid.get(jid) ?? { name: null, push: null };
+      // Meilleur nom/pushName à travers les comptes (préfère un nom réel).
+      e.name = bestName(e.name, c.name);
+      e.push = bestName(e.push, c.pushName);
+      contactByJid.set(jid, e);
+    }
+    interface Agg {
+      jid: string;
+      accountIds: string[];
+      name: string | null;
+      preview: string | null;
+      primaryAccountId: string;
+      bestTs: number; // max(lastMessageAt) vu ; -1 si aucune discussion encore agrégée
+      // Non-lus par compte (dédup intra-compte des lignes @lid + pn) ; sommés à la fin.
+      unreadByAccount: Map<string, number>;
+      allMuted: boolean; // vrai seulement si TOUTES les discussions sont muettes
+      allArchived: boolean; // idem archivées
+    }
+    // Combine les non-lus de deux lignes d'un MÊME compte (doublon @lid + pn du
+    // même contact): pas de double comptage. Ordre de priorité: non-lus positifs
+    // (on garde le max, pas la somme) > « marqué non lu » (-1) > lu (0).
+    const combineAccountUnread = (a: number, b: number): number => {
+      if (a > 0 || b > 0) return Math.max(a, b);
+      if (a === -1 || b === -1) return -1;
+      return 0;
+    };
+    const map = new Map<string, Agg>();
+    for (const r of rows) {
+      if (this.isIgnoredChat(r.jid)) continue;
+      if (this.isPlaceholderChat(r)) continue;
+      // Canonicalise (@lid -> pn via le cache mémoire du compte, comme
+      // chatRowToDto) pour regrouper le même numéro à travers les comptes.
+      const jid = this.canonicalJid(r.accountId, r.jid) ?? r.jid;
+      const ts = r.lastMessageAt ? r.lastMessageAt.getTime() : null;
+      const name = cleanName(r.name);
+      const preview = cleanName(r.lastMessagePreview);
+      let a = map.get(jid);
+      if (!a) {
+        a = {
+          jid,
+          accountIds: [],
+          name: null,
+          preview: null,
+          primaryAccountId: r.accountId,
+          bestTs: -1,
+          unreadByAccount: new Map(),
+          allMuted: true,
+          allArchived: true,
+        };
+        map.set(jid, a);
+      }
+      if (!a.accountIds.includes(r.accountId)) a.accountIds.push(r.accountId);
+      a.unreadByAccount.set(
+        r.accountId,
+        combineAccountUnread(
+          a.unreadByAccount.get(r.accountId) ?? 0,
+          r.unreadCount,
+        ),
+      );
+      a.allMuted = a.allMuted && r.muted;
+      a.allArchived = a.allArchived && r.archived;
+      // La discussion la plus récente fixe le compte primaire et l'aperçu.
+      const effTs = ts ?? 0;
+      if (effTs > a.bestTs) {
+        a.bestTs = effTs;
+        a.primaryAccountId = r.accountId;
+        a.preview = preview;
+      }
+      // Meilleur nom de discussion à travers les comptes (préfère un nom réel).
+      a.name = bestName(a.name, name);
+    }
+    const people: WaPerson[] = [];
+    for (const a of map.values()) {
+      // Somme des non-lus entre comptes (déjà dédupliqués par compte).
+      let unreadSum = 0;
+      let marked = false;
+      for (const v of a.unreadByAccount.values()) {
+        if (v > 0) unreadSum += v;
+        else if (v === -1) marked = true;
+      }
+      const contact = contactByJid.get(a.jid);
+      people.push({
+        jid: a.jid,
+        // Nom réel : carnet (name puis pushName) d'abord, repli nom de discussion.
+        name: bestName(contact?.name, contact?.push, a.name),
+        avatarUrl: '/api/wa/avatar/' + encodeURIComponent(a.jid),
+        accountIds: a.accountIds,
+        primaryAccountId: a.primaryAccountId,
+        unreadCount: unreadSum > 0 ? unreadSum : marked ? -1 : 0,
+        lastMessageTs: a.bestTs > 0 ? a.bestTs : null,
+        lastMessagePreview: a.preview,
+        muted: a.allMuted,
+        archived: a.allArchived,
+      });
+    }
+    // Récentes d'abord (comme la liste de discussions).
+    people.sort((x, y) => (y.lastMessageTs ?? 0) - (x.lastMessageTs ?? 0));
+    return { people };
+  }
+
+  // Timeline fusionnée d'une personne : messages de TOUS les comptes partageant
+  // ce JID pn, triés par date (curseur `before` sur sentAt). Chaque message garde
+  // son accountId d'origine (média/avatar routés côté client par authedMediaUrl).
+  async listPersonTimeline(
+    jid: string,
+    before: number | null,
+    limit: number,
+  ): Promise<{
+    messages: WaMessage[];
+    hasMore: boolean;
+    nextBefore: number | null;
+  }> {
+    const rows = await this.prisma.waMessage.findMany({
+      where: {
+        chatJid: jid,
+        ...(before ? { sentAt: { lt: new Date(before) } } : {}),
+      },
+      orderBy: { sentAt: 'desc' },
+      take: limit + 1,
+      // `select` SANS rawMessage (gros blob proto inutile ici).
+      select: {
+        accountId: true,
+        id: true,
+        chatJid: true,
+        fromMe: true,
+        senderJid: true,
+        senderName: true,
+        type: true,
+        text: true,
+        sentAt: true,
+        status: true,
+        quotedId: true,
+        media: true,
+        reactions: true,
+        clientId: true,
+      },
+    });
+    const { page, hasMore, nextBefore } = this.paginateBySecond(rows, limit);
+    return {
+      messages: page.map((r) => this.msgRowToDto(r.accountId, r)),
+      hasMore,
+      nextBefore,
+    };
+  }
+
+  // Découpe une page de messages (rows triées sentAt DESC, longueur <= limit+1)
+  // en coupant TOUJOURS entre deux secondes distinctes. Les horodatages WhatsApp
+  // sont à la seconde: avec un curseur strict `sentAt < before`, couper au milieu
+  // d'une seconde perdrait définitivement les messages restants de cette seconde
+  // (fréquent en entrelaçant plusieurs comptes). Retourne la page en ordre chrono
+  // croissant + le curseur `nextBefore` (à repasser tel quel).
+  private paginateBySecond<T extends { sentAt: Date }>(
+    rows: T[],
+    limit: number,
+  ): { page: T[]; hasMore: boolean; nextBefore: number | null } {
+    if (rows.length <= limit) {
+      return { page: [...rows].reverse(), hasMore: false, nextBefore: null };
+    }
+    // Il existe au moins une page plus ancienne (rows.length === limit + 1).
+    const boundary = rows[limit].sentAt.getTime(); // seconde du 1er message exclu
+    // Retire de la page les messages de la seconde-frontière: ils reviendront
+    // dans la page suivante via `< nextBefore` (dédupliqués côté client).
+    let end = limit;
+    while (end > 0 && rows[end - 1].sentAt.getTime() === boundary) end--;
+    if (end === 0) {
+      // Cas dégénéré: > limit messages à la même seconde. On renvoie la page
+      // pleine et on avance d'une seconde (évite une boucle infinie ; risque
+      // théorique de sauter la fin de cette seconde, négligeable en 1:1).
+      const page = rows.slice(0, limit).reverse();
+      return { page, hasMore: true, nextBefore: boundary };
+    }
+    const page = rows.slice(0, end).reverse();
+    return { page, hasMore: true, nextBefore: page[0].sentAt.getTime() };
   }
 
   // --- Persistance / helpers ---

@@ -1,12 +1,24 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { WaChat } from '@app/shared-types';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { initials, formatChatTime } from '../../lib/format';
 import Avatar from '../../components/Avatar';
 import { useGetChatsQuery } from './chatsApi';
 import { chatTitle, prettyJid } from './utils';
-import { selectChat, selectSelectedChatJid } from '../ui/uiSlice';
-import { selectConnection } from '../whatsapp/waSlice';
+import {
+  selectActiveAccountId,
+  selectChat,
+  setActiveAccount,
+  selectSelectedChatJid,
+} from '../ui/uiSlice';
+import {
+  selectAccounts,
+  selectConnection,
+  selectDefaultAccountId,
+} from '../whatsapp/waSlice';
+import AccountBar from '../whatsapp/AccountBar';
+import AddAccountModal from '../whatsapp/AddAccountModal';
+import ViewModeToggle from '../whatsapp/ViewModeToggle';
 import { useLogoutMutation } from '../auth/authApi';
 
 type ChatFilter = 'all' | 'unread' | 'groups';
@@ -17,17 +29,35 @@ const isUnread = (c: WaChat) => c.unreadCount > 0 || c.unreadCount === -1;
 
 export default function ChatList() {
   const dispatch = useAppDispatch();
-  const { data: chats, isLoading, isError } = useGetChatsQuery();
+  const activeAccountId = useAppSelector(selectActiveAccountId);
+  const { data: chats, isLoading, isError } = useGetChatsQuery(activeAccountId);
   const selectedJid = useAppSelector(selectSelectedChatJid);
-  const connection = useAppSelector(selectConnection);
+  const connection = useAppSelector(selectConnection(activeAccountId));
+  const accounts = useAppSelector(selectAccounts);
+  const defaultAccountId = useAppSelector(selectDefaultAccountId);
   const [logout] = useLogoutMutation();
+
+  // Réconcilie le compte actif si celui-ci disparaît (suppression reçue par
+  // broadcast, ou ACK de suppression en échec côté initiateur) -> repli sur le
+  // compte principal. Évite de rester coincé sur un compte fantôme.
+  useEffect(() => {
+    if (
+      accounts.length > 0 &&
+      !accounts.some((a) => a.id === activeAccountId)
+    ) {
+      dispatch(setActiveAccount(defaultAccountId));
+    }
+  }, [accounts, activeAccountId, defaultAccountId, dispatch]);
   const [showArchived, setShowArchived] = useState(false);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<ChatFilter>('all');
+  const [showAddAccount, setShowAddAccount] = useState(false);
 
+  // Nom affiché en tête: nom WhatsApp du compte actif, sinon son libellé.
+  const activeLabel = accounts.find((a) => a.id === activeAccountId)?.label;
   const meName =
     connection.me?.name ||
-    (connection.me ? prettyJid(connection.me.jid) : 'Moi');
+    (connection.me ? prettyJid(connection.me.jid) : activeLabel || 'Moi');
 
   const sorted = useMemo(
     () =>
@@ -112,7 +142,12 @@ export default function ChatList() {
           dispatch(selectChat(c.jid));
         }}
       >
-        <Avatar name={title} jid={c.jid} avatarUrl={c.avatarUrl} />
+        <Avatar
+          name={title}
+          jid={c.jid}
+          avatarUrl={c.avatarUrl}
+          accountId={c.accountId}
+        />
         <div className="convitem__body">
           <div className="convitem__top">
             <span className="convitem__title">
@@ -165,6 +200,9 @@ export default function ChatList() {
           </button>
         </div>
       </header>
+
+      <ViewModeToggle />
+      <AccountBar onAdd={() => setShowAddAccount(true)} />
 
       <div className="sidebar__search">
         <input
@@ -235,6 +273,10 @@ export default function ChatList() {
             </p>
           )}
       </div>
+
+      {showAddAccount && (
+        <AddAccountModal onClose={() => setShowAddAccount(false)} />
+      )}
     </aside>
   );
 }

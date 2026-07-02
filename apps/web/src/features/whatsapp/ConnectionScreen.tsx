@@ -1,5 +1,5 @@
 import { QRCodeSVG } from 'qrcode.react';
-import { ConnectionState } from '@app/shared-types';
+import { ConnectionState, DEFAULT_ACCOUNT_ID } from '@app/shared-types';
 import type { WaConnection } from '@app/shared-types';
 import { useAppSelector } from '../../app/hooks';
 import { selectConnection } from './waSlice';
@@ -61,7 +61,7 @@ function body(connection: WaConnection) {
 }
 
 export default function ConnectionScreen() {
-  const connection = useAppSelector(selectConnection);
+  const connection = useAppSelector(selectConnection(DEFAULT_ACCOUNT_ID));
 
   return (
     <div className="connscreen">

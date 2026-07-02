@@ -22,6 +22,7 @@ import type {
   WaMessage,
   WaMessageInfoResponse,
   WaMessagesPage,
+  WaPeopleResponse,
 } from '@app/shared-types';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { WhatsappService } from './whatsapp.service';
@@ -141,6 +142,26 @@ export class WhatsappController {
     res.setHeader('Content-Type', mimetype);
     res.setHeader('Cache-Control', 'private, max-age=86400');
     res.send(buffer);
+  }
+
+  // Personnes (contacts 1:1) agrégées à travers les comptes (vue fusionnée).
+  // Transverse: pas de paramètre accountId (chaque personne porte ses accountIds).
+  @Get('people')
+  async people(): Promise<WaPeopleResponse> {
+    return this.wa.listPeople();
+  }
+
+  // Timeline fusionnée d'une personne: messages de tous ses comptes, triés par
+  // date. jid encodé côté client (encodeURIComponent) ; Express le décode.
+  @Get('people/:jid/timeline')
+  async personTimeline(
+    @Param('jid') jid: string,
+    @Query('before') before?: string,
+    @Query('limit') limit?: string,
+  ): Promise<WaMessagesPage> {
+    const lim = Math.min(Math.max(Number(limit) || 50, 1), 100);
+    const bef = before ? Number(before) : null;
+    return this.wa.listPersonTimeline(jid, bef, lim);
   }
 
   // Bio « À propos » (statut) d'un contact. Best-effort (null si masqué/indispo).

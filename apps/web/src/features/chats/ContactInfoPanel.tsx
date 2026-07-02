@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useAppDispatch } from '../../app/hooks';
+import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import Avatar from '../../components/Avatar';
 import MediaGallery from './MediaGallery';
 import {
@@ -10,7 +10,7 @@ import {
 import { chatTitle, prettyJid } from './utils';
 import { formatChatTime } from '../../lib/format';
 import { blockChat } from '../../services/socket';
-import { closeInfoPanel } from '../ui/uiSlice';
+import { closeInfoPanel, selectActiveAccountId } from '../ui/uiSlice';
 
 interface Props {
   jid: string;
@@ -20,9 +20,10 @@ interface Props {
 // groupe puis section « Médias, liens et documents » avec la galerie.
 export default function ContactInfoPanel({ jid }: Props) {
   const dispatch = useAppDispatch();
-  const { data: chats } = useGetChatsQuery();
+  const accountId = useAppSelector(selectActiveAccountId);
+  const { data: chats } = useGetChatsQuery(accountId);
   const chat = chats?.find((c) => c.jid === jid);
-  const { data: media } = useGetChatMediaQuery(jid);
+  const { data: media } = useGetChatMediaQuery({ accountId, jid });
 
   const title = chat ? chatTitle(chat) : prettyJid(jid);
   const isGroup = chat?.isGroup ?? jid.endsWith('@g.us');
@@ -31,13 +32,16 @@ export default function ContactInfoPanel({ jid }: Props) {
   const mediaCount = media?.length ?? 0;
 
   // Bio « À propos » : 1:1 uniquement (inutile de requêter pour un groupe).
-  const { data: about } = useGetContactAboutQuery(jid, { skip: isGroup });
+  const { data: about } = useGetContactAboutQuery(
+    { accountId, jid },
+    { skip: isGroup },
+  );
   const blocked = chat?.blocked ?? false;
 
   // Bascule blocage : confirmation avant de bloquer (évite un clic accidentel).
   const onToggleBlock = () => {
     if (!blocked && !window.confirm(`Bloquer ${title} ?`)) return;
-    blockChat(jid, !blocked);
+    blockChat(accountId, jid, !blocked);
   };
 
   // Échap ferme le panneau — sauf si une couche modale est ouverte par-dessus
@@ -77,6 +81,7 @@ export default function ContactInfoPanel({ jid }: Props) {
               name={title}
               jid={jid}
               avatarUrl={chat?.avatarUrl ?? null}
+              accountId={accountId}
               size="lg"
             />
           </div>
@@ -104,7 +109,7 @@ export default function ContactInfoPanel({ jid }: Props) {
             <span>Médias, liens et documents</span>
             <span className="infopanel__media-count">{mediaCount}</span>
           </div>
-          <MediaGallery jid={jid} />
+          <MediaGallery jid={jid} accountId={accountId} />
         </section>
 
         {/* Zone d'actions : blocage du contact (1:1 uniquement). */}

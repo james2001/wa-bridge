@@ -1,4 +1,5 @@
 import type {
+  WaAccountsResponse,
   WaChat,
   WaConnection,
   WaMessage,
@@ -9,7 +10,12 @@ import type { WaMessageStatus } from '../enums';
 
 // Événements émis par le backend vers le client web.
 export interface ServerToClientEvents {
-  // État de la connexion WhatsApp (QR à afficher, lié, déconnecté…).
+  // Liste des comptes du pont (multi-compte). Émise à la connexion d'un client
+  // et à chaque changement (ajout / suppression / renommage d'un compte).
+  'wa:accounts': (p: WaAccountsResponse) => void;
+
+  // État de la connexion WhatsApp d'UN compte (QR à afficher, lié, déconnecté…).
+  // Le compte concerné est porté par `conn.accountId`.
   'wa:connection': (conn: WaConnection) => void;
 
   // Lot de discussions (sync initiale ou mise à jour groupée).
