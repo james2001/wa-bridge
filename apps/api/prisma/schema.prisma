@@ -52,11 +52,28 @@ model WaChat {
   archived           Boolean   @default(false)
   muted              Boolean   @default(false)
   avatarUrl          String?   @map("avatar_url")
+  // Communauté WhatsApp: JID de la communauté parente (null si le groupe n'en
+  // fait pas partie) ; isAnnounce = ce groupe est le groupe d'annonces.
+  communityJid       String?   @map("community_jid")
+  isAnnounce         Boolean   @default(false) @map("is_announce")
   updatedAt          DateTime  @updatedAt @map("updated_at")
 
   @@id([accountId, jid])
   @@index([accountId, lastMessageAt])
   @@map("wa_chats")
+}
+
+// Communautés WhatsApp (regroupent des groupes). Le JID est la communauté
+// "parente" ; ses groupes membres référencent ce JID via WaChat.communityJid.
+model WaCommunity {
+  accountId String   @default("default") @map("account_id")
+  jid       String
+  name      String?
+  avatarUrl String?  @map("avatar_url")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@id([accountId, jid])
+  @@map("wa_communities")
 }
 
 // Messages (cache pour l'historique et la réactivité). Clé = (compte, chat, id WhatsApp).

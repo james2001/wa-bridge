@@ -57,6 +57,24 @@ export interface WaChat {
   muted: boolean;
   blocked: boolean; // contact bloqué (1:1 ; toujours false pour un groupe)
   avatarUrl: string | null;
+  // Communauté WhatsApp: JID de la communauté parente d'un groupe (null sinon) ;
+  // isAnnounce = ce groupe est le groupe d'annonces de sa communauté.
+  communityJid: string | null;
+  isAnnounce: boolean;
+}
+
+// Une communauté WhatsApp (regroupe des groupes). Ses groupes membres pointent
+// vers `jid` via WaChat.communityJid.
+export interface WaCommunity {
+  accountId: string; // compte propriétaire
+  jid: string; // JID de la communauté (parent)
+  name: string | null;
+  avatarUrl: string | null; // '/api/wa/avatar/<jid>' (le front ajoute accountId + token)
+}
+
+// GET /api/wa/communities?accountId= -> communautés du compte.
+export interface WaCommunitiesResponse {
+  communities: WaCommunity[];
 }
 
 // GET /api/wa/contacts/:jid/about -> bio/statut « À propos » d'un contact.

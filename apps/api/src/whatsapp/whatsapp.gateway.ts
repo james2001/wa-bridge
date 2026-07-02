@@ -106,6 +106,10 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
       this.wa.on('chat-upsert', (accountId: string, chat: WaChat) =>
         this.server.emit('wa:chat-upsert', { accountId, chat }),
       );
+      // Une communauté a changé (création / renommage) -> le front refetch.
+      this.wa.on('community-upsert', (accountId: string) =>
+        this.server.emit('wa:community', { accountId }),
+      );
       this.wa.on(
         'history-synced',
         (accountId: string, p: { chatJid: string | null }) =>

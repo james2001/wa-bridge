@@ -24,6 +24,9 @@ export interface ServerToClientEvents {
   // Création/mise à jour d'une discussion (nouveau dernier message, unread…).
   'wa:chat-upsert': (p: { accountId: string; chat: WaChat }) => void;
 
+  // Une communauté a changé (création / renommage) : le client refetch la liste.
+  'wa:community': (p: { accountId: string }) => void;
+
   // Nouveau message (entrant ou écho d'un envoi).
   'wa:message': (p: { accountId: string; message: WaMessage }) => void;
 

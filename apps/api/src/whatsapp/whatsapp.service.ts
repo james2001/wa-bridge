@@ -42,6 +42,8 @@ import {
   type WaAccount,
   type WaAccountsResponse,
   type WaChat,
+  type WaCommunitiesResponse,
+  type WaCommunity,
   type WaConnection,
   type WaContactAbout,
   type WaMediaItem,
@@ -89,6 +91,8 @@ export interface WhatsappEvents {
   ) => void;
   chats: (accountId: string, chats: WaChat[]) => void;
   'chat-upsert': (accountId: string, chat: WaChat) => void;
+  // Une communauté a changé (création / renommage) -> rafraîchir la liste.
+  'community-upsert': (accountId: string) => void;
   'history-synced': (accountId: string, p: { chatJid: string | null }) => void;
   reaction: (
     accountId: string,
@@ -1359,25 +1363,78 @@ export class WhatsappService
     groups: any[],
   ): Promise<void> {
     for (const g of groups) {
+      if (!g?.id || this.isIgnoredChat(g.id)) continue;
+      // Une communauté "parente" n'est pas une discussion : on la stocke à part
+      // (WaCommunity) et on ne crée PAS de ligne de chat pour elle.
+      if (g.isCommunity) {
+        await this.upsertCommunity(accountId, this.normJid(g.id), cleanName(g.subject));
+        continue;
+      }
       const subject = cleanName(g?.subject);
-      if (!g?.id || !subject || this.isIgnoredChat(g.id)) continue;
-      // upsert (pas update): un groupe tout neuf (création/jonction) n'a pas
-      // encore de ligne de discussion -> il faut la créer, pas la rater.
-      const row = await this.prisma.waChat
-        .upsert({
-          where: { accountId_jid: { accountId, jid: g.id } },
-          create: {
-            accountId,
-            jid: g.id,
-            name: subject,
-            isGroup: isJidGroup(g.id) ?? true,
-            unreadCount: 0,
-          },
-          update: { name: subject },
-        })
-        .catch(() => null);
+      // Champs communauté présents dans CE payload seulement (update partiel :
+      // `undefined` = inchangé, on n'écrase pas).
+      const comm: { communityJid?: string | null; isAnnounce?: boolean } = {};
+      if (g.linkedParent !== undefined) {
+        comm.communityJid = g.linkedParent ? this.normJid(g.linkedParent) : null;
+      }
+      if (g.isCommunityAnnounce !== undefined) {
+        comm.isAnnounce = !!g.isCommunityAnnounce;
+      }
+      if (!subject && Object.keys(comm).length === 0) continue; // rien à écrire
+      let row;
+      if (subject) {
+        // upsert (pas update): un groupe tout neuf (création/jonction) n'a pas
+        // encore de ligne de discussion -> il faut la créer, pas la rater.
+        row = await this.prisma.waChat
+          .upsert({
+            where: { accountId_jid: { accountId, jid: g.id } },
+            create: {
+              accountId,
+              jid: g.id,
+              name: subject,
+              isGroup: isJidGroup(g.id) ?? true,
+              unreadCount: 0,
+              communityJid: comm.communityJid ?? null,
+              isAnnounce: comm.isAnnounce ?? false,
+            },
+            update: { name: subject, ...comm },
+          })
+          .catch(() => null);
+      } else {
+        // Pas de sujet : on met à jour seulement les champs communauté (si la
+        // ligne existe déjà ; sinon un message/onGroupsUpsert la créera plus tard).
+        row = await this.prisma.waChat
+          .update({ where: { accountId_jid: { accountId, jid: g.id } }, data: comm })
+          .catch(() => null);
+      }
       if (row) this.emit('chat-upsert', accountId, this.chatRowToDto(accountId, row));
     }
+  }
+
+  // Upsert des métadonnées d'une communauté (nom/icône), sans créer de chat.
+  // Émet 'community-upsert' seulement en cas de vrai changement (création ou
+  // renommage) afin que le front rafraîchisse la liste sans spam d'invalidations.
+  private async upsertCommunity(
+    accountId: string,
+    jid: string,
+    name: string | null,
+  ): Promise<void> {
+    if (this.isIgnoredChat(jid)) return;
+    const existing = await this.prisma.waCommunity
+      .findUnique({
+        where: { accountId_jid: { accountId, jid } },
+        select: { name: true },
+      })
+      .catch(() => null);
+    const changed = !existing || (name != null && existing.name !== name);
+    await this.prisma.waCommunity
+      .upsert({
+        where: { accountId_jid: { accountId, jid } },
+        create: { accountId, jid, name },
+        update: name ? { name } : {},
+      })
+      .catch((e) => this.logger.warn(`upsertCommunity: ${e}`));
+    if (changed) this.emit('community-upsert', accountId);
   }
 
   // Récupère le sujet de TOUS les groupes participés (1 requête) et renseigne le
@@ -1397,28 +1454,78 @@ export class WhatsappService
         s.sock.groupFetchAllParticipating(),
         WhatsappService.CHATMODIFY_TIMEOUT_MS,
       );
+      // Communautés (parents) -> table WaCommunity, jamais affichées comme des
+      // discussions. Best-effort (compte sans communauté -> {} / échec ignoré).
+      const communities = await this.withTimeout(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (s.sock as any).communityFetchAllParticipating() as Promise<
+          Record<string, unknown>
+        >,
+        WhatsappService.CHATMODIFY_TIMEOUT_MS,
+      ).catch(() => ({}) as Record<string, unknown>);
+      for (const [cjid, meta] of Object.entries(communities ?? {})) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await this.upsertCommunity(
+          accountId,
+          this.normJid(cjid),
+          cleanName((meta as any)?.subject),
+        );
+      }
       // État courant des groupes (1 requête) -> on n'écrit/émet que sur changement.
       const existing = await this.prisma.waChat
         .findMany({
           where: { accountId, isGroup: true },
-          select: { jid: true, name: true },
+          select: {
+            jid: true,
+            name: true,
+            communityJid: true,
+            isAnnounce: true,
+          },
         })
-        .catch(() => [] as { jid: string; name: string | null }[]);
-      const current = new Map(existing.map((r) => [r.jid, r.name]));
+        .catch(
+          () =>
+            [] as {
+              jid: string;
+              name: string | null;
+              communityJid: string | null;
+              isAnnounce: boolean;
+            }[],
+        );
+      const current = new Map(existing.map((r) => [r.jid, r]));
       let fixed = 0;
       for (const [jid, meta] of Object.entries(all ?? {})) {
-        if (!current.has(jid)) continue; // pas (encore) une discussion -> onGroupsUpsert/messages s'en chargent
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const m = meta as any;
+        // Une communauté "parente" listée parmi les groupes -> WaCommunity.
+        if (m?.isCommunity) {
+          await this.upsertCommunity(accountId, this.normJid(jid), cleanName(m?.subject));
+          continue;
+        }
+        const row = current.get(jid);
+        if (!row) continue; // pas (encore) une discussion -> onGroupsUpsert/messages s'en chargent
         const display =
-          cleanName((meta as any)?.subject) ??
+          cleanName(m?.subject) ??
           (await this.groupNameFromParticipants(accountId, meta));
-        if (!display || current.get(jid) === display) continue; // inchangé
-        const row = await this.prisma.waChat
-          .update({ where: { accountId_jid: { accountId, jid } }, data: { name: display } })
+        const communityJid = m?.linkedParent ? this.normJid(m.linkedParent) : null;
+        const isAnnounce = !!m?.isCommunityAnnounce;
+        const nameChanged = !!display && row.name !== display;
+        const commChanged =
+          (row.communityJid ?? null) !== communityJid ||
+          row.isAnnounce !== isAnnounce;
+        if (!nameChanged && !commChanged) continue; // inchangé
+        const updated = await this.prisma.waChat
+          .update({
+            where: { accountId_jid: { accountId, jid } },
+            data: {
+              ...(nameChanged ? { name: display } : {}),
+              communityJid,
+              isAnnounce,
+            },
+          })
           .catch(() => null);
-        if (row) {
+        if (updated) {
           fixed++;
-          this.emit('chat-upsert', accountId, this.chatRowToDto(accountId, row));
+          this.emit('chat-upsert', accountId, this.chatRowToDto(accountId, updated));
         }
       }
       if (fixed > 0) {
@@ -2147,10 +2254,36 @@ export class WhatsappService
       orderBy: [{ lastMessageAt: 'desc' }],
       take: 500,
     });
+    // Les conteneurs de communauté (parents) ne sont pas des discussions : on
+    // les exclut de la liste (ils servent d'en-tête via WaCommunity).
+    const communityJids = new Set(
+      (
+        await this.prisma.waCommunity
+          .findMany({ where: { accountId }, select: { jid: true } })
+          .catch(() => [] as { jid: string }[])
+      ).map((c) => c.jid),
+    );
     return rows
       .filter((r) => !this.isIgnoredChat(r.jid))
       .filter((r) => !this.isPlaceholderChat(r))
+      .filter((r) => !communityJids.has(r.jid))
       .map((r) => this.chatRowToDto(accountId, r));
+  }
+
+  // Communautés du compte (regroupent des groupes) — vue lecture seule.
+  async listCommunities(
+    accountId = DEFAULT_ACCOUNT_ID,
+  ): Promise<WaCommunitiesResponse> {
+    const rows = await this.prisma.waCommunity
+      .findMany({ where: { accountId }, orderBy: [{ name: 'asc' }] })
+      .catch(() => [] as { jid: string; name: string | null }[]);
+    const communities: WaCommunity[] = rows.map((r) => ({
+      accountId,
+      jid: r.jid,
+      name: cleanName(r.name),
+      avatarUrl: '/api/wa/avatar/' + encodeURIComponent(r.jid),
+    }));
+    return { communities };
   }
 
   // Discussion "fantôme": sans nom ET sans aperçu de message (souvent un @lid
@@ -2946,6 +3079,8 @@ export class WhatsappService
       archived: boolean;
       muted: boolean;
       avatarUrl: string | null;
+      communityJid?: string | null;
+      isAnnounce?: boolean;
     },
   ): WaChat {
     const s = this.ensureSession(accountId);
@@ -2960,6 +3095,9 @@ export class WhatsappService
       pinned: row.pinned,
       archived: row.archived,
       muted: row.muted,
+      // Communauté (groupes) : rattachement + drapeau annonces.
+      communityJid: row.communityJid ?? null,
+      isAnnounce: row.isAnnounce ?? false,
       // Bloqué: état mémoire (set re-synchronisé à la connexion + events).
       // Un groupe n'est jamais bloqué (le set ne contient que des JID 1:1).
       // On canonicalise row.jid (un chat peut être stocké sous @lid) pour la

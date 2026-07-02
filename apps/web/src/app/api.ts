@@ -71,6 +71,8 @@ export const api = createApi({
     // Vue fusionnée par personne (Phase 3).
     'People',
     'PersonTimeline',
+    // Communautés (Phase 4).
+    'WaCommunities',
   ],
   endpoints: () => ({}),
 });

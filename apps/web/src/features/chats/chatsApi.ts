@@ -3,6 +3,8 @@ import type {
   WaChat,
   WaChatsResponse,
   WaChatMediaResponse,
+  WaCommunitiesResponse,
+  WaCommunity,
   WaMediaItem,
   WaContactAbout,
 } from '@app/shared-types';
@@ -41,11 +43,25 @@ export const chatsApi = api.injectEndpoints({
         params: { accountId },
       }),
     }),
+    // Communautés d'un compte (clé de cache = accountId). Sert d'en-tête au
+    // regroupement des groupes ; rafraîchie par le pont socket.
+    getCommunities: builder.query<WaCommunity[], string>({
+      query: (accountId) => ({ url: '/wa/communities', params: { accountId } }),
+      transformResponse: (response: WaCommunitiesResponse) =>
+        response.communities,
+      providesTags: (_r, _e, accountId) => [
+        { type: 'WaCommunities' as const, id: accountId },
+      ],
+    }),
   }),
 });
 
-export const { useGetChatsQuery, useGetChatMediaQuery, useGetContactAboutQuery } =
-  chatsApi;
+export const {
+  useGetChatsQuery,
+  useGetChatMediaQuery,
+  useGetContactAboutQuery,
+  useGetCommunitiesQuery,
+} = chatsApi;
 
 // Remplace tout le cache de la liste d'un compte (sync initiale 'wa:chats').
 export function setChats(accountId: string, chats: WaChat[]) {
