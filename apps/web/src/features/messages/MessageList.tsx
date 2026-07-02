@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { WaMessage } from '@app/shared-types';
+import { markRead } from '../../services/socket';
 import { useGetMessagesQuery } from './messagesApi';
 import MessageBubble from './MessageBubble';
 import MessageScroller from './MessageScroller';
@@ -40,6 +41,17 @@ export default function MessageList({ jid, accountId }: Props) {
   useEffect(() => {
     setBefore(undefined);
   }, [jid]);
+
+  // Marque lu quand un nouveau message ENTRANT arrive dans la discussion ouverte
+  // (comportement WhatsApp Web). Se déclenche à l'ouverture et à chaque nouvel
+  // entrant, mais PAS sur un simple changement de statut (l'id ne change pas).
+  const lastIncomingId =
+    messages.length > 0 && !messages[messages.length - 1].fromMe
+      ? messages[messages.length - 1].id
+      : null;
+  useEffect(() => {
+    if (lastIncomingId) markRead(accountId, jid);
+  }, [accountId, jid, lastIncomingId]);
 
   return (
     <MessageScroller

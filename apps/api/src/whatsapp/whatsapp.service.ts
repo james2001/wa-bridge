@@ -750,13 +750,33 @@ export class WhatsappService
       ) {
         continue;
       }
+      // Non-lu : un message ENTRANT, live ('notify'), dont l'id n'est pas déjà
+      // en base = à compter (+1). La 2e livraison du MÊME id (double livraison
+      // LID) trouve l'id existant -> pas de double comptage. La synchro
+      // d'historique ('append'/history.set) n'incrémente pas.
+      let isNewIncoming = false;
+      if (!msg.fromMe && u?.type === 'notify') {
+        const existed = await this.prisma.waMessage
+          .findUnique({
+            where: {
+              accountId_chatJid_id: {
+                accountId,
+                chatJid: msg.chatJid,
+                id: msg.id,
+              },
+            },
+            select: { id: true },
+          })
+          .catch(() => null);
+        isNewIncoming = !existed;
+      }
       await this.persistMessage(
         accountId,
         msg,
         msg.media ? { rawMessage: rawContent, fileSha256 } : undefined,
       );
       this.attachMediaUrl(msg);
-      const chat = await this.touchChat(accountId, msg);
+      const chat = await this.touchChat(accountId, msg, isNewIncoming);
       this.emit('message', accountId, msg);
       if (chat) this.emit('chat-upsert', accountId, chat);
     }
@@ -2663,6 +2683,11 @@ export class WhatsappService
   private async touchChat(
     accountId: string,
     m: WaMessage,
+    // Incrémente le compteur de non-lus (message entrant, neuf, live). L'appelant
+    // garantit qu'il ne s'agit PAS d'une re-livraison du même id (pas de double
+    // comptage LID). Le `unreadCount` de chats.update reste autoritaire et
+    // réconcilie ensuite ; markRead remet à 0 à l'ouverture.
+    incrementUnread = false,
   ): Promise<WaChat | null> {
     const name = await this.nameFor(accountId, m.chatJid);
     const at = new Date(m.timestamp || Date.now());
@@ -2675,10 +2700,7 @@ export class WhatsappService
           jid: m.chatJid,
           name,
           isGroup: isJidGroup(m.chatJid) ?? false,
-          // Le compteur de non-lus est géré par chats.update (valeur autoritaire
-          // de WhatsApp) — touchChat n'y touche pas (évite le double comptage
-          // dû à la double livraison LID + téléphone du même message).
-          unreadCount: 0,
+          unreadCount: incrementUnread ? 1 : 0,
           lastMessageAt: at,
           lastMessagePreview: preview,
         },
@@ -2686,6 +2708,7 @@ export class WhatsappService
           lastMessageAt: at,
           lastMessagePreview: preview,
           name: name ?? undefined,
+          ...(incrementUnread ? { unreadCount: { increment: 1 } } : {}),
         },
       })
       .catch(() => null);
