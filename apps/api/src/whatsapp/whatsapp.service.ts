@@ -2300,6 +2300,17 @@ export class WhatsappService
       where: { isGroup: false },
       select: { accountId: true, jid: true, name: true, pushName: true },
     });
+    // Un nom « réel » contient une lettre ; un placeholder masqué poussé par
+    // WhatsApp (« +33∙∙∙∙∙84 », « +33 7 80 96 17 49 ») n'en a pas. On privilégie
+    // toujours un nom réel, quel que soit l'ordre des lignes ; repli 1er non vide.
+    const hasLetter = (s: string | null): boolean =>
+      s !== null && /\p{L}/u.test(s);
+    const bestName = (
+      ...cands: (string | null | undefined)[]
+    ): string | null => {
+      const cleaned = cands.map((c) => cleanName(c));
+      return cleaned.find(hasLetter) ?? cleaned.find((c) => c !== null) ?? null;
+    };
     const contactByJid = new Map<
       string,
       { name: string | null; push: string | null }
@@ -2307,14 +2318,11 @@ export class WhatsappService
     for (const c of contactRows) {
       const jid = this.canonicalJid(c.accountId, c.jid) ?? c.jid;
       const e = contactByJid.get(jid) ?? { name: null, push: null };
-      e.name = e.name ?? cleanName(c.name);
-      e.push = e.push ?? cleanName(c.pushName);
+      // Meilleur nom/pushName à travers les comptes (préfère un nom réel).
+      e.name = bestName(e.name, c.name);
+      e.push = bestName(e.push, c.pushName);
       contactByJid.set(jid, e);
     }
-    const contactName = (jid: string): string | null => {
-      const e = contactByJid.get(jid);
-      return e ? e.name ?? e.push : null;
-    };
     interface Agg {
       jid: string;
       accountIds: string[];
@@ -2370,16 +2378,15 @@ export class WhatsappService
       );
       a.allMuted = a.allMuted && r.muted;
       a.allArchived = a.allArchived && r.archived;
-      // La discussion la plus récente fixe le compte primaire, le nom et l'aperçu.
+      // La discussion la plus récente fixe le compte primaire et l'aperçu.
       const effTs = ts ?? 0;
       if (effTs > a.bestTs) {
         a.bestTs = effTs;
         a.primaryAccountId = r.accountId;
         a.preview = preview;
-        if (name) a.name = name;
       }
-      // Repli: garder un nom même si la discussion primaire n'en a pas.
-      if (!a.name && name) a.name = name;
+      // Meilleur nom de discussion à travers les comptes (préfère un nom réel).
+      a.name = bestName(a.name, name);
     }
     const people: WaPerson[] = [];
     for (const a of map.values()) {
@@ -2390,10 +2397,11 @@ export class WhatsappService
         if (v > 0) unreadSum += v;
         else if (v === -1) marked = true;
       }
+      const contact = contactByJid.get(a.jid);
       people.push({
         jid: a.jid,
-        // Carnet d'adresses d'abord ; repli sur le nom de discussion agrégé.
-        name: contactName(a.jid) ?? a.name,
+        // Nom réel : carnet (name puis pushName) d'abord, repli nom de discussion.
+        name: bestName(contact?.name, contact?.push, a.name),
         avatarUrl: '/api/wa/avatar/' + encodeURIComponent(a.jid),
         accountIds: a.accountIds,
         primaryAccountId: a.primaryAccountId,
