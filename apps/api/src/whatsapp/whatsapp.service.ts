@@ -2293,6 +2293,28 @@ export class WhatsappService
     const rows = await this.prisma.waChat.findMany({
       where: { isGroup: false },
     });
+    // Noms du carnet d'adresses, préférés au `name` de discussion (qui peut être
+    // un numéro masqué poussé par WhatsApp) — même préférence que chatDisplayName/
+    // nameFor. Chargés une fois, indexés par JID canonique ; `name` > `pushName`.
+    const contactRows = await this.prisma.waContact.findMany({
+      where: { isGroup: false },
+      select: { accountId: true, jid: true, name: true, pushName: true },
+    });
+    const contactByJid = new Map<
+      string,
+      { name: string | null; push: string | null }
+    >();
+    for (const c of contactRows) {
+      const jid = this.canonicalJid(c.accountId, c.jid) ?? c.jid;
+      const e = contactByJid.get(jid) ?? { name: null, push: null };
+      e.name = e.name ?? cleanName(c.name);
+      e.push = e.push ?? cleanName(c.pushName);
+      contactByJid.set(jid, e);
+    }
+    const contactName = (jid: string): string | null => {
+      const e = contactByJid.get(jid);
+      return e ? e.name ?? e.push : null;
+    };
     interface Agg {
       jid: string;
       accountIds: string[];
@@ -2370,7 +2392,8 @@ export class WhatsappService
       }
       people.push({
         jid: a.jid,
-        name: a.name,
+        // Carnet d'adresses d'abord ; repli sur le nom de discussion agrégé.
+        name: contactName(a.jid) ?? a.name,
         avatarUrl: '/api/wa/avatar/' + encodeURIComponent(a.jid),
         accountIds: a.accountIds,
         primaryAccountId: a.primaryAccountId,
