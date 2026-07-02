@@ -123,6 +123,33 @@ export interface WaMessagesPage {
   nextBefore: number | null; // timestamp à passer pour la page suivante
 }
 
+// --- Vue fusionnée par personne (multi-compte) ---
+//
+// Une « personne » = un contact 1:1 agrégé à travers les comptes liés.
+// L'identité transverse est le JID pn `…@s.whatsapp.net` : le même numéro vu
+// par plusieurs comptes produit une seule personne. Les groupes en sont exclus.
+export interface WaPerson {
+  jid: string; // JID pn canonique — identité de la personne (clé transverse)
+  name: string | null; // meilleur nom disponible parmi les comptes
+  avatarUrl: string | null; // '/api/wa/avatar/<jid>' (le front ajoute accountId + token)
+  accountIds: string[]; // comptes où cette personne apparaît (≥ 1)
+  primaryAccountId: string; // compte le plus récemment actif (routage avatar/média)
+  unreadCount: number; // agrégé (> 0 = nombre, -1 = marqué non lu, 0 = lu)
+  lastMessageTs: number | null; // epoch ms — max à travers les comptes
+  lastMessagePreview: string | null; // aperçu de la discussion la plus récente
+  muted: boolean; // toutes les discussions de la personne sont muettes
+  archived: boolean; // toutes les discussions de la personne sont archivées
+}
+
+// GET /api/wa/people -> personnes 1:1 agrégées multi-comptes (récentes d'abord).
+export interface WaPeopleResponse {
+  people: WaPerson[];
+}
+
+// GET /api/wa/people/:jid/timeline?before=&limit=
+// Timeline fusionnée d'une personne : messages de TOUS ses comptes, triés par
+// date. Chaque WaMessage porte son `accountId` (origine). Forme = WaMessagesPage.
+
 // Accusé de réception d'un message sortant, par destinataire
 // (panneau « Infos du message »). Les horodatages sont en epoch ms, null si
 // l'étape n'a pas (encore) eu lieu.

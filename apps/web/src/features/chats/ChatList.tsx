@@ -18,6 +18,7 @@ import {
 } from '../whatsapp/waSlice';
 import AccountBar from '../whatsapp/AccountBar';
 import AddAccountModal from '../whatsapp/AddAccountModal';
+import ViewModeToggle from '../whatsapp/ViewModeToggle';
 import { useLogoutMutation } from '../auth/authApi';
 
 type ChatFilter = 'all' | 'unread' | 'groups';
@@ -200,6 +201,7 @@ export default function ChatList() {
         </div>
       </header>
 
+      <ViewModeToggle />
       <AccountBar onAdd={() => setShowAddAccount(true)} />
 
       <div className="sidebar__search">

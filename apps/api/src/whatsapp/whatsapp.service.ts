@@ -48,6 +48,8 @@ import {
   type WaMessage,
   type WaMessageInfoResponse,
   type WaMessageReceipt,
+  type WaPeopleResponse,
+  type WaPerson,
   type WaPresence,
   type WaReaction,
 } from '@app/shared-types';
@@ -2176,12 +2178,11 @@ export class WhatsappService
       orderBy: { sentAt: 'desc' },
       take: limit + 1,
     });
-    const hasMore = rows.length > limit;
-    const page = rows.slice(0, limit).reverse();
+    const { page, hasMore, nextBefore } = this.paginateBySecond(rows, limit);
     return {
       messages: page.map((r) => this.msgRowToDto(accountId, r)),
       hasMore,
-      nextBefore: hasMore ? page[0]?.sentAt.getTime() ?? null : null,
+      nextBefore,
     };
   }
 
@@ -2280,6 +2281,215 @@ export class WhatsappService
       sentAt: row.sentAt.getTime(),
       receipts,
     };
+  }
+
+  // --- Vue fusionnée par personne (multi-compte) ---
+
+  // Personnes (contacts 1:1) agrégées à travers TOUS les comptes liés, pour la
+  // vue fusionnée (Phase 3). Identité = JID pn canonique : le même numéro vu par
+  // plusieurs comptes = une seule personne. Groupes exclus ; discussions ignorées
+  // (status/newsletter) et fantômes (@lid sans nom ni aperçu) écartées.
+  async listPeople(): Promise<WaPeopleResponse> {
+    const rows = await this.prisma.waChat.findMany({
+      where: { isGroup: false },
+    });
+    // Noms du carnet d'adresses, préférés au `name` de discussion (qui peut être
+    // un numéro masqué poussé par WhatsApp) — même préférence que chatDisplayName/
+    // nameFor. Chargés une fois, indexés par JID canonique ; `name` > `pushName`.
+    const contactRows = await this.prisma.waContact.findMany({
+      where: { isGroup: false },
+      select: { accountId: true, jid: true, name: true, pushName: true },
+    });
+    // Un nom « réel » contient une lettre ; un placeholder masqué poussé par
+    // WhatsApp (« +33∙∙∙∙∙84 », « +33 7 80 96 17 49 ») n'en a pas. On privilégie
+    // toujours un nom réel, quel que soit l'ordre des lignes ; repli 1er non vide.
+    const hasLetter = (s: string | null): boolean =>
+      s !== null && /\p{L}/u.test(s);
+    const bestName = (
+      ...cands: (string | null | undefined)[]
+    ): string | null => {
+      const cleaned = cands.map((c) => cleanName(c));
+      return cleaned.find(hasLetter) ?? cleaned.find((c) => c !== null) ?? null;
+    };
+    const contactByJid = new Map<
+      string,
+      { name: string | null; push: string | null }
+    >();
+    for (const c of contactRows) {
+      const jid = this.canonicalJid(c.accountId, c.jid) ?? c.jid;
+      const e = contactByJid.get(jid) ?? { name: null, push: null };
+      // Meilleur nom/pushName à travers les comptes (préfère un nom réel).
+      e.name = bestName(e.name, c.name);
+      e.push = bestName(e.push, c.pushName);
+      contactByJid.set(jid, e);
+    }
+    interface Agg {
+      jid: string;
+      accountIds: string[];
+      name: string | null;
+      preview: string | null;
+      primaryAccountId: string;
+      bestTs: number; // max(lastMessageAt) vu ; -1 si aucune discussion encore agrégée
+      // Non-lus par compte (dédup intra-compte des lignes @lid + pn) ; sommés à la fin.
+      unreadByAccount: Map<string, number>;
+      allMuted: boolean; // vrai seulement si TOUTES les discussions sont muettes
+      allArchived: boolean; // idem archivées
+    }
+    // Combine les non-lus de deux lignes d'un MÊME compte (doublon @lid + pn du
+    // même contact): pas de double comptage. Ordre de priorité: non-lus positifs
+    // (on garde le max, pas la somme) > « marqué non lu » (-1) > lu (0).
+    const combineAccountUnread = (a: number, b: number): number => {
+      if (a > 0 || b > 0) return Math.max(a, b);
+      if (a === -1 || b === -1) return -1;
+      return 0;
+    };
+    const map = new Map<string, Agg>();
+    for (const r of rows) {
+      if (this.isIgnoredChat(r.jid)) continue;
+      if (this.isPlaceholderChat(r)) continue;
+      // Canonicalise (@lid -> pn via le cache mémoire du compte, comme
+      // chatRowToDto) pour regrouper le même numéro à travers les comptes.
+      const jid = this.canonicalJid(r.accountId, r.jid) ?? r.jid;
+      const ts = r.lastMessageAt ? r.lastMessageAt.getTime() : null;
+      const name = cleanName(r.name);
+      const preview = cleanName(r.lastMessagePreview);
+      let a = map.get(jid);
+      if (!a) {
+        a = {
+          jid,
+          accountIds: [],
+          name: null,
+          preview: null,
+          primaryAccountId: r.accountId,
+          bestTs: -1,
+          unreadByAccount: new Map(),
+          allMuted: true,
+          allArchived: true,
+        };
+        map.set(jid, a);
+      }
+      if (!a.accountIds.includes(r.accountId)) a.accountIds.push(r.accountId);
+      a.unreadByAccount.set(
+        r.accountId,
+        combineAccountUnread(
+          a.unreadByAccount.get(r.accountId) ?? 0,
+          r.unreadCount,
+        ),
+      );
+      a.allMuted = a.allMuted && r.muted;
+      a.allArchived = a.allArchived && r.archived;
+      // La discussion la plus récente fixe le compte primaire et l'aperçu.
+      const effTs = ts ?? 0;
+      if (effTs > a.bestTs) {
+        a.bestTs = effTs;
+        a.primaryAccountId = r.accountId;
+        a.preview = preview;
+      }
+      // Meilleur nom de discussion à travers les comptes (préfère un nom réel).
+      a.name = bestName(a.name, name);
+    }
+    const people: WaPerson[] = [];
+    for (const a of map.values()) {
+      // Somme des non-lus entre comptes (déjà dédupliqués par compte).
+      let unreadSum = 0;
+      let marked = false;
+      for (const v of a.unreadByAccount.values()) {
+        if (v > 0) unreadSum += v;
+        else if (v === -1) marked = true;
+      }
+      const contact = contactByJid.get(a.jid);
+      people.push({
+        jid: a.jid,
+        // Nom réel : carnet (name puis pushName) d'abord, repli nom de discussion.
+        name: bestName(contact?.name, contact?.push, a.name),
+        avatarUrl: '/api/wa/avatar/' + encodeURIComponent(a.jid),
+        accountIds: a.accountIds,
+        primaryAccountId: a.primaryAccountId,
+        unreadCount: unreadSum > 0 ? unreadSum : marked ? -1 : 0,
+        lastMessageTs: a.bestTs > 0 ? a.bestTs : null,
+        lastMessagePreview: a.preview,
+        muted: a.allMuted,
+        archived: a.allArchived,
+      });
+    }
+    // Récentes d'abord (comme la liste de discussions).
+    people.sort((x, y) => (y.lastMessageTs ?? 0) - (x.lastMessageTs ?? 0));
+    return { people };
+  }
+
+  // Timeline fusionnée d'une personne : messages de TOUS les comptes partageant
+  // ce JID pn, triés par date (curseur `before` sur sentAt). Chaque message garde
+  // son accountId d'origine (média/avatar routés côté client par authedMediaUrl).
+  async listPersonTimeline(
+    jid: string,
+    before: number | null,
+    limit: number,
+  ): Promise<{
+    messages: WaMessage[];
+    hasMore: boolean;
+    nextBefore: number | null;
+  }> {
+    const rows = await this.prisma.waMessage.findMany({
+      where: {
+        chatJid: jid,
+        ...(before ? { sentAt: { lt: new Date(before) } } : {}),
+      },
+      orderBy: { sentAt: 'desc' },
+      take: limit + 1,
+      // `select` SANS rawMessage (gros blob proto inutile ici).
+      select: {
+        accountId: true,
+        id: true,
+        chatJid: true,
+        fromMe: true,
+        senderJid: true,
+        senderName: true,
+        type: true,
+        text: true,
+        sentAt: true,
+        status: true,
+        quotedId: true,
+        media: true,
+        reactions: true,
+        clientId: true,
+      },
+    });
+    const { page, hasMore, nextBefore } = this.paginateBySecond(rows, limit);
+    return {
+      messages: page.map((r) => this.msgRowToDto(r.accountId, r)),
+      hasMore,
+      nextBefore,
+    };
+  }
+
+  // Découpe une page de messages (rows triées sentAt DESC, longueur <= limit+1)
+  // en coupant TOUJOURS entre deux secondes distinctes. Les horodatages WhatsApp
+  // sont à la seconde: avec un curseur strict `sentAt < before`, couper au milieu
+  // d'une seconde perdrait définitivement les messages restants de cette seconde
+  // (fréquent en entrelaçant plusieurs comptes). Retourne la page en ordre chrono
+  // croissant + le curseur `nextBefore` (à repasser tel quel).
+  private paginateBySecond<T extends { sentAt: Date }>(
+    rows: T[],
+    limit: number,
+  ): { page: T[]; hasMore: boolean; nextBefore: number | null } {
+    if (rows.length <= limit) {
+      return { page: [...rows].reverse(), hasMore: false, nextBefore: null };
+    }
+    // Il existe au moins une page plus ancienne (rows.length === limit + 1).
+    const boundary = rows[limit].sentAt.getTime(); // seconde du 1er message exclu
+    // Retire de la page les messages de la seconde-frontière: ils reviendront
+    // dans la page suivante via `< nextBefore` (dédupliqués côté client).
+    let end = limit;
+    while (end > 0 && rows[end - 1].sentAt.getTime() === boundary) end--;
+    if (end === 0) {
+      // Cas dégénéré: > limit messages à la même seconde. On renvoie la page
+      // pleine et on avance d'une seconde (évite une boucle infinie ; risque
+      // théorique de sauter la fin de cette seconde, négligeable en 1:1).
+      const page = rows.slice(0, limit).reverse();
+      return { page, hasMore: true, nextBefore: boundary };
+    }
+    const page = rows.slice(0, end).reverse();
+    return { page, hasMore: true, nextBefore: page[0].sentAt.getTime() };
   }
 
   // --- Persistance / helpers ---
