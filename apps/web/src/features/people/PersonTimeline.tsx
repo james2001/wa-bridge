@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { WaMessage } from '@app/shared-types';
 import { useAppSelector } from '../../app/hooks';
 import { selectAccounts } from '../whatsapp/waSlice';
+import { markRead } from '../../services/socket';
 import MessageBubble from '../messages/MessageBubble';
 import MessageScroller from '../messages/MessageScroller';
 import { useGetPersonTimelineQuery } from './peopleApi';
@@ -50,6 +51,18 @@ export default function PersonTimeline({ jid, showAccount }: Props) {
   useEffect(() => {
     setBefore(undefined);
   }, [jid]);
+
+  // Marque lu à l'arrivée d'un nouvel entrant dans la personne ouverte (sur le
+  // compte du message), sans se redéclencher sur un simple changement de statut.
+  const lastIncoming =
+    messages.length > 0 && !messages[messages.length - 1].fromMe
+      ? messages[messages.length - 1]
+      : null;
+  const lastIncomingAcc = lastIncoming?.accountId;
+  const lastIncomingId = lastIncoming?.id;
+  useEffect(() => {
+    if (lastIncomingAcc && lastIncomingId) markRead(lastIncomingAcc, jid);
+  }, [jid, lastIncomingAcc, lastIncomingId]);
 
   return (
     <MessageScroller
