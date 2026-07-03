@@ -2319,6 +2319,23 @@ export class WhatsappService
     };
   }
 
+  // Recherche plein-texte dans les messages d'un compte (API Agent/LLM). Insensible
+  // à la casse, récents d'abord, bornée. Renvoie [] pour une requête vide.
+  async searchMessages(
+    accountId = DEFAULT_ACCOUNT_ID,
+    q: string,
+    limit: number,
+  ): Promise<WaMessage[]> {
+    if (!q.trim()) return [];
+    const take = Math.min(Math.max(limit, 1), 50);
+    const rows = await this.prisma.waMessage.findMany({
+      where: { accountId, text: { contains: q, mode: 'insensitive' } },
+      orderBy: { sentAt: 'desc' },
+      take,
+    });
+    return rows.map((r) => this.msgRowToDto(accountId, r));
+  }
+
   // Galerie média d'une discussion: TOUS les médias, récents d'abord. On
   // canonicalise le JID (numéro) comme les autres méthodes, on filtre les
   // messages porteurs d'un média, puis on réutilise msgRowToDto (qui pose
