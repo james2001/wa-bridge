@@ -1657,3 +1657,50 @@ a.gallery__file:hover {
   opacity: 0.6;
   cursor: default;
 }
+
+/* ---------- Communautés (Phase 4) ---------- */
+/* En-tête de communauté repliable dans l'onglet « Groupes ». */
+.community {
+  border-bottom: 1px solid var(--border);
+}
+.community__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  background: var(--bg);
+  padding: 8px 16px;
+  text-align: left;
+}
+.community__header:hover {
+  background: #e9edef;
+}
+.community__title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.community__count {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.community__chevron {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+/* Groupes membres légèrement décalés sous l'en-tête de leur communauté. */
+.community__groups .convitem {
+  padding-left: 28px;
+}
+/* Pastille « annonces » devant le nom du groupe d'annonces. */
+.convitem__announce {
+  flex-shrink: 0;
+  font-size: 13px;
+}

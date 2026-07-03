@@ -66,6 +66,21 @@ export function useSocketBridge(): void {
       // Reflète non-lus (lecture depuis le téléphone) / mute / archive / nom /
       // aperçu de la personne dans la boîte fusionnée.
       dispatch(api.util.invalidateTags([{ type: 'People', id: 'LIST' }]));
+      // Un groupe rattaché à une communauté -> la liste des communautés a pu
+      // changer (backfill à la connexion). Rafraîchit l'en-tête de regroupement.
+      if (p.chat.communityJid) {
+        dispatch(
+          api.util.invalidateTags([
+            { type: 'WaCommunities', id: p.accountId },
+          ]),
+        );
+      }
+    };
+    // Une communauté a changé (création / renommage) -> refetch de la liste.
+    const onCommunity = (p: { accountId: string }) => {
+      dispatch(
+        api.util.invalidateTags([{ type: 'WaCommunities', id: p.accountId }]),
+      );
     };
     const onMessage = (p: { accountId: string; message: WaMessage }) => {
       dispatch(upsertMessage(p.accountId, p.message.chatJid, p.message));
@@ -128,6 +143,8 @@ export function useSocketBridge(): void {
           { type: 'WaChats', id: p.accountId },
           // Boîte fusionnée: le sync peut changer aperçus / personnes.
           { type: 'People', id: 'LIST' },
+          // Communautés : le sync (backfill) peut les (re)peupler.
+          { type: 'WaCommunities', id: p.accountId },
         ]),
       );
       if (p.chatJid) {
@@ -145,6 +162,7 @@ export function useSocketBridge(): void {
     socket.on('wa:connection', onConnection);
     socket.on('wa:chats', onChats);
     socket.on('wa:chat-upsert', onChatUpsert);
+    socket.on('wa:community', onCommunity);
     socket.on('wa:message', onMessage);
     socket.on('wa:message-status', onMessageStatus);
     socket.on('wa:message-deleted', onMessageDeleted);
@@ -157,6 +175,7 @@ export function useSocketBridge(): void {
       socket.off('wa:connection', onConnection);
       socket.off('wa:chats', onChats);
       socket.off('wa:chat-upsert', onChatUpsert);
+      socket.off('wa:community', onCommunity);
       socket.off('wa:message', onMessage);
       socket.off('wa:message-status', onMessageStatus);
       socket.off('wa:message-deleted', onMessageDeleted);

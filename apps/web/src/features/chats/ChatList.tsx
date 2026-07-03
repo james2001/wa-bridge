@@ -3,7 +3,7 @@ import type { WaChat } from '@app/shared-types';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { initials, formatChatTime } from '../../lib/format';
 import Avatar from '../../components/Avatar';
-import { useGetChatsQuery } from './chatsApi';
+import { useGetChatsQuery, useGetCommunitiesQuery } from './chatsApi';
 import { chatTitle, prettyJid } from './utils';
 import {
   selectActiveAccountId,
@@ -52,6 +52,27 @@ export default function ChatList() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<ChatFilter>('all');
   const [showAddAccount, setShowAddAccount] = useState(false);
+  // Communautés (regroupement des groupes dans l'onglet « Groupes »).
+  const { data: communities } = useGetCommunitiesQuery(activeAccountId);
+  const communitiesById = useMemo(
+    () => new Map((communities ?? []).map((c) => [c.jid, c])),
+    [communities],
+  );
+  // Communautés repliées (par défaut toutes dépliées). Clé scopée au compte
+  // actif : un même JID de communauté peut exister sur 2 comptes (pas de fuite).
+  const [collapsedCommunities, setCollapsedCommunities] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const commKey = (cjid: string) => `${activeAccountId} ${cjid}`;
+  const toggleCommunity = (cjid: string) => {
+    const key = commKey(cjid);
+    setCollapsedCommunities((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   // Nom affiché en tête: nom WhatsApp du compte actif, sinon son libellé.
   const activeLabel = accounts.find((a) => a.id === activeAccountId)?.label;
@@ -151,6 +172,14 @@ export default function ChatList() {
         <div className="convitem__body">
           <div className="convitem__top">
             <span className="convitem__title">
+              {c.isAnnounce && (
+                <span
+                  className="convitem__announce"
+                  title="Annonces de la communauté"
+                >
+                  📢
+                </span>
+              )}
               {c.muted && (
                 <span className="convitem__muted" title="Notifications coupées">
                   🔇
@@ -178,6 +207,70 @@ export default function ChatList() {
           </div>
         </div>
       </button>
+    );
+  };
+
+  // Regroupement des groupes par communauté (onglet « Groupes »). Chaque
+  // communauté = en-tête repliable (groupe d'annonces d'abord) ; les groupes
+  // hors communauté sont affichés à plat en dessous.
+  const renderGroupsGrouped = (groups: WaChat[]) => {
+    const byCommunity = new Map<string, WaChat[]>();
+    const standalone: WaChat[] = [];
+    for (const g of groups) {
+      if (g.communityJid) {
+        const arr = byCommunity.get(g.communityJid);
+        if (arr) arr.push(g);
+        else byCommunity.set(g.communityJid, [g]);
+      } else {
+        standalone.push(g);
+      }
+    }
+    const entries = [...byCommunity.entries()].sort((a, b) =>
+      (communitiesById.get(a[0])?.name ?? a[0]).localeCompare(
+        communitiesById.get(b[0])?.name ?? b[0],
+      ),
+    );
+    return (
+      <>
+        {entries.map(([cjid, gs]) => {
+          const comm = communitiesById.get(cjid);
+          const cname = comm?.name ?? 'Communauté';
+          const collapsed = collapsedCommunities.has(commKey(cjid));
+          // Groupe d'annonces d'abord, puis par récence.
+          const sorted = [...gs].sort(
+            (a, b) =>
+              (b.isAnnounce ? 1 : 0) - (a.isAnnounce ? 1 : 0) ||
+              (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0),
+          );
+          return (
+            <div className="community" key={cjid}>
+              <button
+                type="button"
+                className="community__header"
+                aria-expanded={!collapsed}
+                onClick={() => toggleCommunity(cjid)}
+              >
+                <Avatar
+                  name={cname}
+                  jid={cjid}
+                  avatarUrl={comm?.avatarUrl ?? null}
+                  accountId={activeAccountId}
+                  size="sm"
+                />
+                <span className="community__title">{cname}</span>
+                <span className="community__count">{gs.length}</span>
+                <span className="community__chevron">
+                  {collapsed ? '▸' : '▾'}
+                </span>
+              </button>
+              {!collapsed && (
+                <div className="community__groups">{sorted.map(renderItem)}</div>
+              )}
+            </div>
+          );
+        })}
+        {standalone.map(renderItem)}
+      </>
     );
   };
 
@@ -260,7 +353,9 @@ export default function ChatList() {
           archivedExpanded &&
           visibleArchived.map(renderItem)}
 
-        {visibleActive.map(renderItem)}
+        {filter === 'groups'
+          ? renderGroupsGrouped(visibleActive)
+          : visibleActive.map(renderItem)}
 
         {!isLoading &&
           !isError &&

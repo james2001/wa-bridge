@@ -19,6 +19,7 @@ import type {
   WaChatsResponse,
   WaConnection,
   WaContactAbout,
+  WaCommunitiesResponse,
   WaMessage,
   WaMessageInfoResponse,
   WaMessagesPage,
@@ -50,6 +51,14 @@ export class WhatsappController {
     @Query('accountId') accountId = 'default',
   ): Promise<WaChatsResponse> {
     return { chats: await this.wa.listChats(accountId) };
+  }
+
+  // Communautés du compte (regroupent des groupes) — vue lecture seule.
+  @Get('communities')
+  async communities(
+    @Query('accountId') accountId = 'default',
+  ): Promise<WaCommunitiesResponse> {
+    return this.wa.listCommunities(accountId);
   }
 
   // jid encodé côté client (encodeURIComponent) ; Express le décode en param.
