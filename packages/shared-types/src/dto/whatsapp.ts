@@ -216,3 +216,31 @@ export interface WaPresence {
   kind: PresenceKind;
   at: number; // epoch ms
 }
+
+// --- API Agent / LLM (server-to-server, header X-API-Key) ---
+//
+// Surface dédiée aux intégrations automatisées (agents, LLM). Distincte de
+// l'API humaine (JWT) : auth par clé statique, garde-fous d'écriture, audit.
+
+// POST /api/agent/wa/chats/:jid/text — corps de la demande d'envoi de texte.
+export interface WaAgentSendTextRequest {
+  text: string; // corps du message (1..4096 caractères)
+  accountId?: string; // compte émetteur (défaut 'default')
+  clientId?: string; // corrélation/idempotence (défaut: UUID généré côté serveur)
+  dryRun?: boolean; // true = valide + prévisualise sans envoyer
+}
+
+// POST /api/agent/wa/chats/:jid/text — réponse d'envoi (ou de dry-run).
+export interface WaAgentSendResponse {
+  dryRun: boolean;
+  clientId: string; // écho du clientId (généré ou fourni)
+  message: WaMessage | null; // null en dry-run, sinon le message envoyé
+  // Présent en dry-run: aperçu de ce qui aurait été envoyé (jamais le contenu).
+  preview?: { accountId: string; chatJid: string; textLength: number };
+}
+
+// GET /api/agent/wa/search — résultats combinés (discussions + messages).
+export interface WaAgentSearchResponse {
+  chats: WaChat[]; // rempli si scope=chats
+  messages: WaMessage[]; // rempli si scope=messages
+}
