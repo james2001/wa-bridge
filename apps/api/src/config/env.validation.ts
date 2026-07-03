@@ -6,6 +6,7 @@ import {
   IsString,
   Min,
   MinLength,
+  ValidateIf,
   validateSync,
 } from 'class-validator';
 
@@ -59,6 +60,32 @@ class EnvironmentVariables {
   @IsOptional()
   @IsString()
   WA_MEDIA_DIR?: string;
+
+  // --- API Agent/LLM (server-to-server) ---
+  // Clé statique (X-API-Key). Optionnelle (absente/vide => API agent
+  // désactivée) ; si fournie non vide, elle doit faire au moins 32 caractères.
+  // ValidateIf ignore l'état "vide" documenté (disabled) pour ne pas bloquer le boot.
+  @ValidateIf((o: EnvironmentVariables) => !!o.AGENT_API_KEY)
+  @IsOptional()
+  @IsString()
+  @MinLength(32)
+  AGENT_API_KEY?: string;
+
+  @IsOptional()
+  @IsString()
+  AGENT_WRITE_ENABLED?: string;
+
+  @IsOptional()
+  @IsString()
+  AGENT_ALLOW_MEDIA?: string;
+
+  @IsOptional()
+  @IsString()
+  AGENT_ACCOUNT_ALLOWLIST?: string;
+
+  @IsOptional()
+  @IsString()
+  AGENT_CHAT_ALLOWLIST?: string;
 }
 
 export function validate(config: Record<string, unknown>): EnvironmentVariables {
