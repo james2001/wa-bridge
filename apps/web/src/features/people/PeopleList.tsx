@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { WaPerson } from '@app/shared-types';
+import type { WaAccount, WaPerson } from '@app/shared-types';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { initials, formatChatTime } from '../../lib/format';
 import Avatar from '../../components/Avatar';
@@ -10,6 +10,7 @@ import { useGetPeopleQuery } from './peopleApi';
 import ViewModeToggle from '../whatsapp/ViewModeToggle';
 import AccountBar from '../whatsapp/AccountBar';
 import AddAccountModal from '../whatsapp/AddAccountModal';
+import RelinkAccountModal from '../whatsapp/RelinkAccountModal';
 import { useLogoutMutation } from '../auth/authApi';
 
 // Boîte de réception fusionnée : une entrée par personne, tous comptes confondus.
@@ -21,6 +22,7 @@ export default function PeopleList() {
   const [logout] = useLogoutMutation();
   const [query, setQuery] = useState('');
   const [showAddAccount, setShowAddAccount] = useState(false);
+  const [relinkAccount, setRelinkAccount] = useState<WaAccount | null>(null);
 
   const q = query.trim().toLowerCase();
   const acctById = useMemo(
@@ -133,7 +135,10 @@ export default function PeopleList() {
       </header>
 
       <ViewModeToggle />
-      <AccountBar onAdd={() => setShowAddAccount(true)} />
+      <AccountBar
+        onAdd={() => setShowAddAccount(true)}
+        onRelink={setRelinkAccount}
+      />
 
       <div className="sidebar__search">
         <input
@@ -163,6 +168,12 @@ export default function PeopleList() {
 
       {showAddAccount && (
         <AddAccountModal onClose={() => setShowAddAccount(false)} />
+      )}
+      {relinkAccount && (
+        <RelinkAccountModal
+          account={relinkAccount}
+          onClose={() => setRelinkAccount(null)}
+        />
       )}
     </aside>
   );
