@@ -115,6 +115,11 @@ interface AccountSession {
   connecting: boolean;
   destroyed: boolean;
   connection: WaConnection; // porte désormais accountId
+  // Dernier événement Baileys reçu (tous types). Le keepalive intégré de
+  // Baileys ne détecte que les coupures transport: une session peut rester
+  // "open" (pings OK) sans plus RIEN recevoir au niveau applicatif (zombie,
+  // cf. incident du 04-06/07/2026). Le watchdog surveille cet horodatage.
+  lastEventAt: number;
   saveCreds?: () => Promise<void>; // issu de useMultiFileAuthState
   // Caches mémoire (anciennement champs d'instance) :
   lidToPn: Map<string, string>;
@@ -169,6 +174,14 @@ export class WhatsappService
   ];
   // Plafond de la galerie média (récents d'abord) — borne la requête/réponse.
   private static readonly MEDIA_GALLERY_LIMIT = 200;
+  // Watchdog anti-session-zombie: une session 'open' sans AUCUN événement
+  // applicatif pendant QUIET_MS est forcée à se reconnecter (la reconnexion
+  // relivre la file offline côté WhatsApp -> rattrape les messages manqués).
+  // 3 h laisse passer les nuits calmes; une reconnexion à tort coûte ~2 s.
+  private static readonly WATCHDOG_INTERVAL_MS = 10 * 60_000;
+  private static readonly WATCHDOG_QUIET_MS = 3 * 60 * 60_000;
+
+  private watchdogTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly config: ConfigService,
@@ -210,9 +223,15 @@ export class WhatsappService
       await this.loadLidMap(acc.id);
       void this.connect(acc.id);
     }
+
+    this.watchdogTimer = setInterval(
+      () => this.watchdogSweep(),
+      WhatsappService.WATCHDOG_INTERVAL_MS,
+    );
   }
 
   onModuleDestroy(): void {
+    clearInterval(this.watchdogTimer);
     for (const s of this.sessions.values()) {
       s.destroyed = true;
       try {
@@ -256,6 +275,7 @@ export class WhatsappService
           qr: null,
           me: null,
         },
+        lastEventAt: Date.now(),
         lidToPn: new Map(),
         blockedJids: new Set(),
         historySyncing: false,
@@ -550,6 +570,12 @@ export class WhatsappService
       });
       s.sock = sock;
 
+      // Trace d'activité pour le watchdog: TOUT lot d'événements Baileys
+      // (messages, receipts, présence, connexion…) rafraîchit lastEventAt.
+      sock.ev.process(() => {
+        s.lastEventAt = Date.now();
+      });
+
       sock.ev.on('creds.update', saveCreds);
       sock.ev.on('connection.update', (u) => {
         void this.onConnectionUpdate(accountId, u);
@@ -649,7 +675,7 @@ export class WhatsappService
           ? { jid: jidNormalizedUser(me.id), name: me.name ?? null }
           : null,
       });
-      this.logger.log('WhatsApp connecté');
+      this.logger.log(`[${accountId}] WhatsApp connecté`);
       void this.backfillGroupSubjects(accountId);
       void this.syncBlocklist(accountId);
     }
@@ -658,7 +684,7 @@ export class WhatsappService
       const code = (lastDisconnect?.error as Boom | undefined)?.output
         ?.statusCode;
       if (code === DisconnectReason.loggedOut) {
-        this.logger.warn('Session WhatsApp déconnectée (logged out)');
+        this.logger.warn(`[${accountId}] session WhatsApp déconnectée (logged out)`);
         this.setConnection(accountId, {
           state: ConnectionState.LOGGED_OUT,
           qr: null,
@@ -666,11 +692,56 @@ export class WhatsappService
         });
         await this.clearAuth(accountId);
       } else {
+        this.logger.warn(
+          `[${accountId}] connexion WhatsApp fermée (code ${code ?? 'inconnu'}: ${
+            (lastDisconnect?.error as Error | undefined)?.message ?? '?'
+          })${s.destroyed ? '' : ' — reconnexion dans 2 s'}`,
+        );
         this.setConnection(accountId, { state: ConnectionState.CLOSE, qr: null });
       }
       // Reconnexion (sauf si on a été détruit)
       if (!s.destroyed) {
         setTimeout(() => void this.connect(accountId), 2000);
+      }
+    }
+  }
+
+  // Anti-zombie: force la reconnexion des sessions 'open' muettes depuis trop
+  // longtemps. Le keepalive Baileys teste le transport (ping/pong), pas la
+  // livraison applicative: une session peut rester "open" des jours sans plus
+  // recevoir un seul événement. sock.end() déclenche connection.update 'close'
+  // -> la reconnexion standard reprend, et WhatsApp relivre la file offline.
+  private watchdogSweep(): void {
+    const now = Date.now();
+    for (const s of this.sessions.values()) {
+      if (s.destroyed || !s.sock) continue;
+      const quietMs = now - s.lastEventAt;
+      if (quietMs < WhatsappService.WATCHDOG_QUIET_MS) continue;
+      const quietMin = Math.round(quietMs / 60_000);
+      // Session fermée dont la boucle de reconnexion s'est éteinte (aucun
+      // événement non plus): on relance connect() directement — le socket
+      // précédent est déjà clos, pas de risque de doublon.
+      if (s.connection.state === ConnectionState.CLOSE) {
+        this.logger.warn(
+          `[${s.accountId}] watchdog: fermée et muette depuis ${quietMin} min — relance de la connexion`,
+        );
+        s.lastEventAt = now;
+        void this.connect(s.accountId);
+        continue;
+      }
+      if (s.connection.state !== ConnectionState.OPEN) continue;
+      this.logger.warn(
+        `[${s.accountId}] watchdog: aucun événement depuis ${quietMin} min — reconnexion forcée`,
+      );
+      s.lastEventAt = now; // évite un re-déclenchement pendant la reconnexion
+      try {
+        s.sock.end(
+          new Boom('watchdog: session silencieuse', {
+            statusCode: DisconnectReason.connectionLost,
+          }),
+        );
+      } catch (e) {
+        this.logger.error(`[${s.accountId}] watchdog end: ${e}`);
       }
     }
   }
