@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { WaChat } from '@app/shared-types';
+import type { WaAccount, WaChat } from '@app/shared-types';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { initials, formatChatTime } from '../../lib/format';
 import Avatar from '../../components/Avatar';
@@ -18,6 +18,7 @@ import {
 } from '../whatsapp/waSlice';
 import AccountBar from '../whatsapp/AccountBar';
 import AddAccountModal from '../whatsapp/AddAccountModal';
+import RelinkAccountModal from '../whatsapp/RelinkAccountModal';
 import ViewModeToggle from '../whatsapp/ViewModeToggle';
 import { useLogoutMutation } from '../auth/authApi';
 
@@ -52,6 +53,7 @@ export default function ChatList() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<ChatFilter>('all');
   const [showAddAccount, setShowAddAccount] = useState(false);
+  const [relinkAccount, setRelinkAccount] = useState<WaAccount | null>(null);
   // Communautés (regroupement des groupes dans l'onglet « Groupes »).
   const { data: communities } = useGetCommunitiesQuery(activeAccountId);
   const communitiesById = useMemo(
@@ -295,7 +297,10 @@ export default function ChatList() {
       </header>
 
       <ViewModeToggle />
-      <AccountBar onAdd={() => setShowAddAccount(true)} />
+      <AccountBar
+        onAdd={() => setShowAddAccount(true)}
+        onRelink={setRelinkAccount}
+      />
 
       <div className="sidebar__search">
         <input
@@ -371,6 +376,12 @@ export default function ChatList() {
 
       {showAddAccount && (
         <AddAccountModal onClose={() => setShowAddAccount(false)} />
+      )}
+      {relinkAccount && (
+        <RelinkAccountModal
+          account={relinkAccount}
+          onClose={() => setRelinkAccount(null)}
+        />
       )}
     </aside>
   );

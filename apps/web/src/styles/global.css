@@ -1431,6 +1431,21 @@ a.gallery__file:hover {
   background: var(--bg);
   color: var(--danger);
 }
+.acctchip__relink {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.acctchip__relink:hover {
+  background: var(--bg);
+  color: var(--green-dark);
+}
 
 /* --- Modale « Ajouter un compte » --- */
 .addacct {
