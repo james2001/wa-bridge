@@ -123,6 +123,9 @@ interface AccountSession {
   saveCreds?: () => Promise<void>; // issu de useMultiFileAuthState
   // Caches mémoire (anciennement champs d'instance) :
   lidToPn: Map<string, string>;
+  // Noms de contacts (carnet + pushName) pour les résolutions SYNCHRONES
+  // (mentions dans msgRowToDto). Chargé au boot, tenu à jour par upsertContact.
+  nameByJid: Map<string, { carnet: string | null; push: string | null }>;
   blockedJids: Set<string>;
   historySyncing: boolean;
   groupBackfillRunning: boolean;
@@ -209,6 +212,7 @@ export class WhatsappService
       })
       .catch((e) => this.logger.warn(`seed compte default: ${e}`));
     await this.loadLidMap(DEFAULT_ACCOUNT_ID);
+    await this.loadContactNames(DEFAULT_ACCOUNT_ID);
     await this.connect(DEFAULT_ACCOUNT_ID);
 
     // Reconnecte les comptes secondaires déjà liés (hors 'default', déjà lancé,
@@ -221,6 +225,7 @@ export class WhatsappService
         continue;
       }
       await this.loadLidMap(acc.id);
+      await this.loadContactNames(acc.id);
       void this.connect(acc.id);
     }
 
@@ -277,6 +282,7 @@ export class WhatsappService
         },
         lastEventAt: Date.now(),
         lidToPn: new Map(),
+        nameByJid: new Map(),
         blockedJids: new Set(),
         historySyncing: false,
         groupBackfillRunning: false,
@@ -1429,6 +1435,14 @@ export class WhatsappService
     if (!c?.id) return;
     const carnet = cleanName(c.name);
     const push = cleanName(c.notify);
+    // Cache mémoire des noms (mentions) — mêmes règles que l'update DB :
+    // on n'écrase jamais une valeur existante par du vide.
+    const s = this.ensureSession(accountId);
+    const prev = s.nameByJid.get(c.id as string);
+    s.nameByJid.set(c.id as string, {
+      carnet: carnet ?? prev?.carnet ?? null,
+      push: push ?? prev?.push ?? null,
+    });
     await this.prisma.waContact
       .upsert({
         where: { accountId_jid: { accountId, jid: c.id } },
@@ -2912,7 +2926,10 @@ export class WhatsappService
   ): Promise<WaChat | null> {
     const name = await this.nameFor(accountId, m.chatJid);
     const at = new Date(m.timestamp || Date.now());
-    const preview = previewOf(m);
+    const preview = previewOf({
+      ...m,
+      text: this.resolveMentions(accountId, m.text),
+    });
     const row = await this.prisma.waChat
       .upsert({
         where: { accountId_jid: { accountId, jid: m.chatJid } },
@@ -2972,6 +2989,26 @@ export class WhatsappService
     }
   }
 
+  // Charge les noms de contacts en mémoire au démarrage (scopé par compte) —
+  // nécessaire aux résolutions synchrones (mentions) dans msgRowToDto.
+  private async loadContactNames(accountId = DEFAULT_ACCOUNT_ID): Promise<void> {
+    const s = this.ensureSession(accountId);
+    try {
+      const rows = await this.prisma.waContact.findMany({
+        where: { accountId },
+        select: { jid: true, name: true, pushName: true },
+      });
+      for (const r of rows) {
+        s.nameByJid.set(r.jid, {
+          carnet: cleanName(r.name),
+          push: cleanName(r.pushName),
+        });
+      }
+    } catch (e) {
+      this.logger.warn(`loadContactNames: ${e}`);
+    }
+  }
+
   // Retourne le @s.whatsapp.net canonique d'un JID @lid si connu, sinon le JID.
   // Normalise un JID utilisateur en retirant le suffixe d'appareil/agent
   // (ex: "33...:0@s.whatsapp.net" -> "33...@s.whatsapp.net", idem @lid). Sans
@@ -2997,6 +3034,40 @@ export class WhatsappService
     const norm = this.normJid(jid);
     if (!isLidUser(norm)) return norm;
     return s.lidToPn.get(norm) ?? s.lidToPn.get(jid) ?? norm;
+  }
+
+  // Jeton de mention WhatsApp: "@" suivi de la partie utilisateur d'un JID
+  // (numéro de téléphone OU identifiant LID, purement numérique).
+  private static readonly MENTION_RE = /@(\d{5,20})/g;
+
+  // Nom affichable pour la partie numérique d'une mention, ou null si inconnu.
+  // Essaie le LID (via la carte LID -> pn), puis le pn direct.
+  private mentionDisplay(accountId: string, num: string): string | null {
+    const s = this.ensureSession(accountId);
+    const pn = s.lidToPn.get(`${num}@lid`);
+    const candidates = [pn, `${num}@s.whatsapp.net`, `${num}@lid`];
+    for (const jid of candidates) {
+      if (!jid) continue;
+      const entry = s.nameByJid.get(jid);
+      const name = entry?.carnet ?? entry?.push;
+      if (name) return name;
+    }
+    return null;
+  }
+
+  // Remplace les jetons "@<numéro>" par "@<nom du contact>" quand il est connu
+  // (sinon le jeton reste tel quel). WhatsApp stocke les mentions sous forme
+  // brute dans le texte ; sans cette résolution l'UI affiche "@206600979..."
+  // au lieu de "@Antoine R". Synchrone: s'appuie sur les caches mémoire.
+  private resolveMentions(
+    accountId: string,
+    text: string | null,
+  ): string | null {
+    if (!text || !text.includes('@')) return text;
+    return text.replace(WhatsappService.MENTION_RE, (token, num: string) => {
+      const name = this.mentionDisplay(accountId, num);
+      return name ? `@${name}` : token;
+    });
   }
 
   // Discussions à NE PAS afficher: Status/Stories (status@broadcast) et
@@ -3246,7 +3317,7 @@ export class WhatsappService
       senderJid: row.senderJid,
       senderName: row.senderName,
       type: row.type as WaMessage['type'],
-      text: row.text,
+      text: this.resolveMentions(accountId, row.text),
       timestamp: row.sentAt.getTime(),
       status: row.status as WaMessageStatus,
       quotedId: row.quotedId,
