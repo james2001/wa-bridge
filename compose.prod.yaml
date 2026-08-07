@@ -1,0 +1,268 @@
+# =============================================================================
+#  wa-bridge — déploiement de PRODUCTION (Docker Swarm)
+#
+#  Le développement local reste sur `docker-compose.yml` / `make up`. Ce fichier
+#  ne s'utilise jamais en local : il ne construit aucune image et attend un
+#  PostgreSQL externe.
+#
+#  Aucune valeur propre à un hébergement n'est écrite ici — registre, nœud,
+#  domaine, port et secrets arrivent par variables d'environnement (côté
+#  Portainer : « Environment variables » de la stack ; sinon un `.env` à côté du
+#  fichier). Ce compose est donc réutilisable tel quel sur n'importe quel Swarm.
+#
+#  Déployer :
+#      ./scripts/build-push.sh          # construit et pousse les 3 images
+#      docker stack deploy -c compose.prod.yaml wa-bridge
+#
+#  --- Ce que Swarm ne sait PAS faire, et qui explique les écarts avec le dev ---
+#    - `build:`     : `docker stack deploy` l'IGNORE silencieusement. Une stack
+#                     déployée depuis un dépôt git ne reconstruit jamais une
+#                     image : le site continuerait de servir l'ancienne en
+#                     paraissant sain. D'où des images de registre uniquement.
+#    - `restart:`   : remplacé par `deploy.restart_policy`.
+#    - `depends_on` : sans effet. Chaque service attend lui-même ce dont il a
+#                     besoin (voir les boucles `until …`).
+#    - `mem_limit:` : remplacé par `deploy.resources.limits`.
+#
+#  --- LE POINT CRITIQUE : LA SESSION WHATSAPP EST UNIQUE ---
+#  Le backend est un APPAREIL LIÉ. Son état d'authentification vit dans le
+#  volume `wa_auth`, et Baileys ouvre une socket avec ce jeu de clés. Deux
+#  processus partageant ce volume, c'est la session invalidée côté WhatsApp et
+#  un QR à re-scanner sur le téléphone. D'où, sur `backend` :
+#      replicas: 1                     — jamais deux ;
+#      update_config.order: stop-first — l'ancien meurt AVANT que le nouveau
+#                                        naisse (Swarm fait l'inverse par défaut).
+#  Ne pas « scaler » ce service : le goulot est le compte WhatsApp, pas le CPU.
+#
+#  --- POURQUOI TOUT EST ÉPINGLÉ SUR UN NŒUD ---
+#  `wa_auth` et `media_cache` sont des volumes LOCAUX : la session n'existe que
+#  sur le nœud qui l'a écrite. Si le backend est replanifié ailleurs, il démarre
+#  sur un volume vide et redemande un QR. La contrainte SWARM_NODE fixe donc la
+#  stack sur une machine, au prix assumé de l'absence de bascule automatique :
+#  ce nœud tombe, le service est indisponible jusqu'à son retour.
+#  Un stockage partagé (NFS/CIFS) lèverait la contrainte, mais un volume réseau
+#  sous une base SQLite de session est un excellent moyen de la corrompre.
+#
+#  --- VARIABLES ---
+#  Obligatoires (aucun défaut : une absence casse le déploiement au lieu de
+#  faire tourner l'application avec une valeur d'exemple) :
+#      REGISTRY        — préfixe des images, ex. registry.example.com/monorg
+#      SWARM_NODE      — hostname du nœud qui porte les volumes (`docker node ls`)
+#      APP_PORT        — port publié sur l'hôte, consommé par le reverse proxy
+#      APP_DOMAIN      — domaine public servi par le reverse proxy
+#      DATABASE_URL    — PostgreSQL externe (postgresql://user:pass@host:port/db)
+#      APP_PASSWORD    — la SEULE barrière applicative devant les discussions
+#      JWT_ACCESS_SECRET / JWT_REFRESH_SECRET   — openssl rand -hex 32
+#  Optionnelles, avec un défaut documenté :
+#      JWT_ACCESS_TTL (15m), JWT_REFRESH_TTL (30d), AGENT_* (API agent, désactivée)
+#
+#  --- LE PORT PUBLIÉ DOIT ÊTRE LIBRE SUR TOUT LE SWARM ---
+#  À vérifier AVANT le premier déploiement (`ss -ltn`, `docker service ls`).
+#  Un port déjà pris par une autre stack ne fait pas échouer le déploiement : le
+#  maillage ingress route le trafic vers l'un ou l'autre, les deux conteneurs
+#  restent sains, et la bascule passe inaperçue. Un port hôte, un service.
+#
+#  --- Les tags d'image appartiennent à scripts/build-push.sh ---
+#  Ne pas les éditer à la main : le script les réécrit après un push réussi.
+#  Ils sont figés dans le fichier (et non passés en variable) pour que le dépôt
+#  dise, à chaque commit, quelle version tourne réellement.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Migrations Prisma, one-shot. `restart_policy.condition: none` : Swarm laisse
+  # la tâche en `complete` au lieu de la relancer en boucle.
+  #
+  # `prisma` est appelé par son chemin dans node_modules et NON via `pnpm exec` :
+  # l'image finale ne copie que /app, donc corepack n'y a aucun cache pnpm et
+  # `pnpm` TÉLÉCHARGERAIT son binaire au démarrage. Un conteneur qui dépend du
+  # registre npm pour migrer une base casse le jour où npm tousse.
+  # ---------------------------------------------------------------------------
+  migrations:
+    image: ${REGISTRY}/wa-bridge_api:20260807-95e4770
+    command: ["./node_modules/.bin/prisma", "migrate", "deploy"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+    deploy:
+      placement:
+        constraints:
+          - node.hostname == ${SWARM_NODE}
+      restart_policy:
+        condition: none
+      resources:
+        limits:
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # API NestJS + pont WhatsApp (Baileys).
+  #
+  # La boucle `until … prisma migrate status` remplace le `depends_on: migrate`
+  # du dev : `migrate status` sort non-zéro tant qu'une migration reste à
+  # appliquer. Démarrer avant, c'est une application qui répond 500 sur des
+  # tables absentes tout en s'affichant « running ».
+  # ---------------------------------------------------------------------------
+  backend:
+    image: ${REGISTRY}/wa-bridge_api:20260807-95e4770
+    command:
+      - sh
+      - -c
+      - |
+        until ./node_modules/.bin/prisma migrate status >/dev/null 2>&1; do
+          echo 'backend: attente des migrations…' >&2
+          sleep 5
+        done
+        exec node dist/main.js
+    environment:
+      NODE_ENV: production
+      API_PORT: "3000"
+      DATABASE_URL: ${DATABASE_URL}
+      # La seule barrière devant l'intégralité des discussions. Pas de défaut :
+      # ce dépôt est public, un mot de passe d'exemple y serait un mot de passe
+      # connu de tous.
+      APP_PASSWORD: ${APP_PASSWORD}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-30d}
+      # Le front est servi sur la même origine, donc le CORS ne concerne que les
+      # appels hors navigateur. La valeur doit être le domaine PUBLIC exact :
+      # c'est ce que le navigateur envoie, pas l'IP:port du nœud.
+      CORS_ORIGINS: https://${APP_DOMAIN}
+      WA_AUTH_DIR: /data/wa-auth
+      # --- API Agent/LLM (server-to-server, header X-API-Key) ---
+      # Vide => API agent DÉSACTIVÉE, et c'est le défaut voulu : cette porte n'a
+      # pas de JWT devant elle, seulement une clé statique.
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
+      AGENT_WRITE_ENABLED: ${AGENT_WRITE_ENABLED:-false}
+      AGENT_ALLOW_MEDIA: ${AGENT_ALLOW_MEDIA:-false}
+      AGENT_ACCOUNT_ALLOWLIST: ${AGENT_ACCOUNT_ALLOWLIST:-}
+      AGENT_CHAT_ALLOWLIST: ${AGENT_CHAT_ALLOWLIST:-}
+    volumes:
+      # ⚠ Identifiants de la session WhatsApp liée. Qui lit ce volume lit les
+      # messages. Local au nœud (voir l'épinglage en en-tête).
+      - wa_auth:/data/wa-auth
+      # Médias déchiffrés à la demande. Reconstructible : une perte coûte un
+      # re-téléchargement, pas une re-liaison.
+      - media_cache:/data/media-cache
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "require('http').get('http://127.0.0.1:3000/api/health',
+          r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      # Baileys resynchronise l'historique au démarrage : le premier /api/health
+      # utile arrive bien après le `node dist/main.js`.
+      start_period: 90s
+    deploy:
+      # UNE seule. Voir l'en-tête : deux processus sur `wa_auth`, c'est la
+      # session invalidée et un QR à re-scanner.
+      replicas: 1
+      update_config:
+        # Swarm démarre le remplaçant AVANT de tuer l'ancien par défaut. Ici
+        # c'est exactement ce qu'il ne faut pas.
+        order: stop-first
+      resources:
+        limits:
+          # Baileys garde en mémoire l'état de synchronisation des discussions.
+          memory: 1G
+      placement:
+        constraints:
+          - node.hostname == ${SWARM_NODE}
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # SPA React (nginx). Statique pur : /api et /socket.io sont aiguillés en amont
+  # par le proxy.
+  # ---------------------------------------------------------------------------
+  frontend:
+    image: ${REGISTRY}/wa-bridge_web:20260807-95e4770
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 128M
+      placement:
+        constraints:
+          - node.hostname == ${SWARM_NODE}
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # Le SEUL port publié de la stack. Caddy garde ici le rôle qu'il a en dev —
+  # aiguiller /api et /socket.io vers le backend, le reste vers la SPA — mais
+  # SANS TLS : la terminaison HTTPS appartient au reverse proxy d'entrée, qui
+  # porte le certificat et parle à ce conteneur en clair.
+  #
+  # Pourquoi ce Caddy plutôt que deux `location` dans le proxy d'entrée, ou dans
+  # le nginx du front :
+  #   - il re-résout ses upstreams à chaque requête. nginx résout au démarrage et
+  #     REFUSE DE DÉMARRER sur un « host not found in upstream » — dans un Swarm
+  #     où les services démarrent dans un ordre quelconque, c'est une panne qui
+  #     demande un redémarrage manuel dans le bon ordre ;
+  #   - il gère l'upgrade WebSocket de socket.io sans configuration.
+  # ---------------------------------------------------------------------------
+  proxy:
+    image: ${REGISTRY}/wa-bridge_proxy:20260807-95e4770
+    ports:
+      - "${APP_PORT}:80"
+    healthcheck:
+      # /healthz est servi par Caddy lui-même (voir infra/caddy/Caddyfile.prod) :
+      # sonder /api/health ferait redémarrer le proxy à chaque incident du
+      # BACKEND, soit une panne ajoutée à une panne.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 128M
+      placement:
+        constraints:
+          - node.hostname == ${SWARM_NODE}
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  # ⚠ SENSIBLE — session WhatsApp. Un `docker volume rm` ici = re-scan du QR.
+  wa_auth:
+  media_cache:
