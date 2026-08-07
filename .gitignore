@@ -12,6 +12,8 @@ apps/api/prisma/generated/
 .env
 .env.*.local
 *.local
+# Adressage de la machine de build (dépôt public : pas d'infra ici)
+scripts/build-push.env
 
 # TLS certs (générés localement)
 infra/caddy/certs/*
@@ -32,3 +34,6 @@ Thumbs.db
 
 # Docker volumes locaux éventuels
 .volumes/
+
+# Sauvegardes de .env : secrets, jamais dans un dépôt public
+.env.bak*

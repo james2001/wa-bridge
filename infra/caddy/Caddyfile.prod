@@ -1,0 +1,48 @@
+# Reverse proxy INTERNE de la stack de production (wa.kiora.tech).
+#
+# Différence unique mais totale avec `Caddyfile` (dev) : ici Caddy ne fait PAS
+# de TLS. La terminaison HTTPS appartient à Nginx Proxy Manager, qui porte le
+# certificat wildcard *.kiora.tech et parle à ce conteneur en clair sur le port
+# hôte 8110. `auto_https off` est donc obligatoire : sans lui, Caddy verrait un
+# nom de site sans schéma, tenterait d'obtenir un certificat pour lui-même et
+# écouterait sur :443 — deux choses que personne ne lui demande ici.
+{
+	# Aucune raison d'ouvrir l'API d'administration dans un conteneur qu'on ne
+	# reconfigure jamais à chaud.
+	admin off
+	auto_https off
+
+	servers {
+		# NPM est en amont : sans cette ligne, chaque ligne de log attribue la
+		# requête à l'IP du proxy et pas à celle du visiteur, ce qui rend les
+		# logs inutiles le jour où on cherche qui s'est connecté.
+		trusted_proxies static private_ranges
+	}
+}
+
+:80 {
+	encode zstd gzip
+
+	# Sonde du conteneur lui-même. Volontairement servie par Caddy et non
+	# relayée au backend : un healthcheck qui traverse le backend fait
+	# redémarrer le proxy chaque fois que c'est le BACKEND qui va mal — on
+	# ajoute une panne à une panne.
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# Socket.io (temps réel). Caddy gère l'upgrade WebSocket sans directive.
+	handle /socket.io/* {
+		reverse_proxy backend:3000
+	}
+
+	# API REST (NestJS expose tout sous le préfixe global /api).
+	handle /api/* {
+		reverse_proxy backend:3000
+	}
+
+	# Tout le reste : la SPA (nginx, avec son fallback try_files).
+	handle {
+		reverse_proxy frontend:80
+	}
+}
