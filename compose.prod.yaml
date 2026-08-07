@@ -79,7 +79,7 @@ services:
   # registre npm pour migrer une base casse le jour où npm tousse.
   # ---------------------------------------------------------------------------
   migrations:
-    image: ${REGISTRY}/wa-bridge_api:20260807-95e4770
+    image: ${REGISTRY}/wa-bridge_api:20260807-e518413
     command: ["./node_modules/.bin/prisma", "migrate", "deploy"]
     environment:
       NODE_ENV: production
@@ -108,7 +108,7 @@ services:
   # tables absentes tout en s'affichant « running ».
   # ---------------------------------------------------------------------------
   backend:
-    image: ${REGISTRY}/wa-bridge_api:20260807-95e4770
+    image: ${REGISTRY}/wa-bridge_api:20260807-e518413
     command:
       - sh
       - -c
@@ -192,7 +192,7 @@ services:
   # par le proxy.
   # ---------------------------------------------------------------------------
   frontend:
-    image: ${REGISTRY}/wa-bridge_web:20260807-95e4770
+    image: ${REGISTRY}/wa-bridge_web:20260807-e518413
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]
       interval: 15s
@@ -232,7 +232,7 @@ services:
   #   - il gère l'upgrade WebSocket de socket.io sans configuration.
   # ---------------------------------------------------------------------------
   proxy:
-    image: ${REGISTRY}/wa-bridge_proxy:20260807-95e4770
+    image: ${REGISTRY}/wa-bridge_proxy:20260807-e518413
     ports:
       - "${APP_PORT}:80"
     healthcheck:
