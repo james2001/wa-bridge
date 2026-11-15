@@ -115,6 +115,12 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
         (accountId: string, p: { chatJid: string | null }) =>
           this.server.emit('wa:history-synced', { accountId, ...p }),
       );
+      // Message supprimé « pour moi » -> retiré de l'affichage.
+      this.wa.on(
+        'message-deleted',
+        (accountId: string, p: { id: string; chatJid: string }) =>
+          this.server.emit('wa:message-deleted', { accountId, ...p }),
+      );
       this.wa.on(
         'reaction',
         (
@@ -166,6 +172,8 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
       chatJid: string;
       text: string;
       clientId: string;
+      quotedId?: string;
+      mentions?: string[];
     },
   ): Promise<{ ok: boolean; message?: WaMessage; error?: string }> {
     const accountId = input.accountId ?? 'default';
@@ -175,10 +183,77 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
         input.chatJid,
         input.text,
         input.clientId,
+        input.quotedId || undefined,
+        Array.isArray(input.mentions) ? input.mentions : undefined,
       );
       return { ok: true, message };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : 'send_failed' };
+    }
+  }
+
+  // Suppression d'un message (règles vérifiées par le service).
+  @SubscribeMessage('wa:delete')
+  async onDelete(
+    @MessageBody()
+    input: {
+      accountId?: string;
+      chatJid: string;
+      messageId: string;
+      scope: 'me' | 'everyone';
+    },
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.logger.log(`wa:delete ${input.chatJid}/${input.messageId} (${input.scope})`);
+    try {
+      await this.wa.deleteMessage(
+        input.accountId ?? 'default',
+        input.chatJid,
+        input.messageId,
+        input.scope,
+      );
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'delete_failed' };
+    }
+  }
+
+  // Modification d'un de ses messages texte (règles vérifiées par le service).
+  @SubscribeMessage('wa:edit')
+  async onEdit(
+    @MessageBody()
+    input: { accountId?: string; chatJid: string; messageId: string; text: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.logger.log(`wa:edit ${input.chatJid}/${input.messageId}`);
+    try {
+      await this.wa.editMessage(
+        input.accountId ?? 'default',
+        input.chatJid,
+        input.messageId,
+        input.text ?? '',
+      );
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'edit_failed' };
+    }
+  }
+
+  // Réaction emoji sur un message ('' = retrait). Ack pour signaler l'échec.
+  @SubscribeMessage('wa:react')
+  async onReact(
+    @MessageBody()
+    input: { accountId?: string; chatJid: string; messageId: string; emoji: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.logger.log(`wa:react ${input.chatJid}/${input.messageId} -> ${input.emoji || '(retrait)'}`);
+    try {
+      await this.wa.sendReaction(
+        input.accountId ?? 'default',
+        input.chatJid,
+        input.messageId,
+        input.emoji ?? '',
+      );
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'react_failed' };
     }
   }
 
@@ -210,6 +285,79 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
   ): Promise<void> {
     this.logger.log(`wa:mute ${input.chatJid} -> ${input.muted}`);
     await this.wa.setMuted(input.accountId ?? 'default', input.chatJid, input.muted);
+  }
+
+  @SubscribeMessage('wa:pin')
+  async onPin(
+    @MessageBody() input: { accountId?: string; chatJid: string; pinned: boolean },
+  ): Promise<void> {
+    this.logger.log(`wa:pin ${input.chatJid} -> ${input.pinned}`);
+    await this.wa.setPinned(input.accountId ?? 'default', input.chatJid, input.pinned);
+  }
+
+  @SubscribeMessage('wa:star')
+  async onStar(
+    @MessageBody()
+    input: { accountId?: string; chatJid: string; messageId: string; starred: boolean },
+  ): Promise<void> {
+    await this.wa.setStarred(
+      input.accountId ?? 'default',
+      input.chatJid,
+      input.messageId,
+      Boolean(input.starred),
+    );
+  }
+
+  @SubscribeMessage('wa:forward')
+  async onForward(
+    @MessageBody()
+    input: { accountId?: string; chatJid: string; messageId: string; toJid: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.logger.log(`wa:forward ${input.chatJid}/${input.messageId} -> ${input.toJid}`);
+    try {
+      await this.wa.forwardMessage(
+        input.accountId ?? 'default',
+        input.chatJid,
+        input.messageId,
+        String(input.toJid ?? ''),
+      );
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'forward_failed' };
+    }
+  }
+
+  @SubscribeMessage('wa:group-leave')
+  async onGroupLeave(
+    @MessageBody() input: { accountId?: string; chatJid: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.logger.log(`wa:group-leave ${input.chatJid}`);
+    try {
+      await this.wa.leaveGroup(input.accountId ?? 'default', input.chatJid);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'leave_failed' };
+    }
+  }
+
+  @SubscribeMessage('wa:mark-unread')
+  async onMarkUnread(
+    @MessageBody() input: { accountId?: string; chatJid: string },
+  ): Promise<void> {
+    await this.wa.markUnread(input.accountId ?? 'default', input.chatJid);
+  }
+
+  @SubscribeMessage('wa:delete-chat')
+  async onDeleteChat(
+    @MessageBody() input: { accountId?: string; chatJid: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.logger.log(`wa:delete-chat ${input.chatJid}`);
+    try {
+      await this.wa.deleteChat(input.accountId ?? 'default', input.chatJid);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'delete_chat_failed' };
+    }
   }
 
   @SubscribeMessage('wa:block')

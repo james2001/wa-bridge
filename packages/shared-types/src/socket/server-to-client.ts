@@ -38,7 +38,7 @@ export interface ServerToClientEvents {
     status: WaMessageStatus;
   }) => void;
 
-  // Message révoqué/supprimé pour tout le monde (typé, non émis aujourd'hui).
+  // Message supprimé « pour moi » : à retirer de l'affichage.
   'wa:message-deleted': (p: {
     accountId: string;
     id: string;

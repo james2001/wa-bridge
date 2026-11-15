@@ -30,6 +30,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   proto,
   type ConnectionState as BaileysConnectionState,
+  type WAMessage,
   type WASocket,
 } from 'baileys';
 import { Boom } from '@hapi/boom';
@@ -43,6 +44,8 @@ import {
   type WaAccountsResponse,
   type WaChat,
   type WaCommunitiesResponse,
+  type WaContactEntry,
+  type WaGroupInfo,
   type WaCommunity,
   type WaConnection,
   type WaContactAbout,
@@ -134,8 +137,14 @@ interface AccountSession {
   avatarNoPhoto: Map<string, number>;
   avatarActive: number;
   avatarQueue: Array<() => void>;
-  localMetaGuard: Map<string, { archivedUntil: number; mutedUntil: number }>;
+  localMetaGuard: Map<string, Partial<Record<MetaField, number>>>;
+  // Relecture complète de l'app-state en cours (cf. resyncChatStateOnce) :
+  // seuls les épinglages en sont retenus.
+  chatStateReplay: boolean;
 }
+
+// Champs app-state posés localement puis renvoyés en écho par WhatsApp.
+type MetaField = 'archived' | 'muted' | 'pinned';
 
 @Injectable()
 export class WhatsappService
@@ -157,6 +166,16 @@ export class WhatsappService
   private readonly removedAccounts = new Set<string>();
 
   private static readonly LOCAL_META_GUARD_MS = 20_000;
+  // Limite WhatsApp du nombre de discussions épinglées.
+  static readonly MAX_PINNED = 3;
+  // Marqueur (dans le dossier auth du compte) : relecture app-state déjà faite.
+  private static readonly CHAT_STATE_RESYNC_MARK = '.wa-bridge-chat-state-resync-v2';
+  private static readonly CHAT_STATE_RESYNC_TIMEOUT_MS = 60_000;
+  private static readonly REACTION_TIMEOUT_MS = 15_000;
+  // Fenêtre de modification d'un message (règle WhatsApp).
+  static readonly EDIT_WINDOW_MS = 15 * 60 * 1000;
+  // Fenêtre « supprimer pour tout le monde » (prudente, sous la limite WhatsApp).
+  static readonly REVOKE_WINDOW_MS = 48 * 60 * 60 * 1000;
   private static readonly AVATAR_MAX_CONCURRENT = 3;
   // 24 h: une entrée "pas de photo" mise à tort (timeout) se répare en 1 jour.
   private static readonly AVATAR_NEG_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
@@ -213,6 +232,9 @@ export class WhatsappService
       .catch((e) => this.logger.warn(`seed compte default: ${e}`));
     await this.loadLidMap(DEFAULT_ACCOUNT_ID);
     await this.loadContactNames(DEFAULT_ACCOUNT_ID);
+    // Recale les aperçus sur le vrai dernier message (réparation idempotente,
+    // en tâche de fond : ne retarde pas la connexion).
+    void this.repairChatPreviews(DEFAULT_ACCOUNT_ID);
     await this.connect(DEFAULT_ACCOUNT_ID);
 
     // Reconnecte les comptes secondaires déjà liés (hors 'default', déjà lancé,
@@ -226,6 +248,7 @@ export class WhatsappService
       }
       await this.loadLidMap(acc.id);
       await this.loadContactNames(acc.id);
+      void this.repairChatPreviews(acc.id);
       void this.connect(acc.id);
     }
 
@@ -292,6 +315,7 @@ export class WhatsappService
         avatarActive: 0,
         avatarQueue: [],
         localMetaGuard: new Map(),
+        chatStateReplay: false,
       };
       this.sessions.set(accountId, s);
     }
@@ -684,6 +708,9 @@ export class WhatsappService
       this.logger.log(`[${accountId}] WhatsApp connecté`);
       void this.backfillGroupSubjects(accountId);
       void this.syncBlocklist(accountId);
+      // Une fois par compte : relit l'état « épinglé / archivé / lu » depuis
+      // WhatsApp (laisse d'abord finir la synchro de connexion).
+      setTimeout(() => void this.resyncChatStateOnce(accountId), 20_000);
     }
 
     if (connection === 'close') {
@@ -947,12 +974,15 @@ export class WhatsappService
 
       if (protocol.type === Type.REVOKE) {
         await this.applyRevoke(accountId, chatJid, targetId);
+        await this.refreshChatPreview(accountId, chatJid, true);
         return true;
       }
       if (protocol.type === Type.MESSAGE_EDIT) {
         const newText = this.extractEditedText(protocol.editedMessage);
-        if (newText !== null)
+        if (newText !== null) {
           await this.applyEdit(accountId, chatJid, targetId, newText);
+          await this.refreshChatPreview(accountId, chatJid, true);
+        }
         // Consommé même si le texte n'a pu être extrait (pas de bulle de contrôle).
         return true;
       }
@@ -1032,6 +1062,17 @@ export class WhatsappService
       const rawJid: string | undefined = key?.remoteJid ?? undefined;
       const id: string | undefined = key?.id ?? undefined;
       if (!rawJid || !id) continue;
+      // Étoile posée / retirée depuis un autre appareil (starAction).
+      if (typeof update?.starred === 'boolean') {
+        const jid = (await this.resolvePn(accountId, rawJid)) ?? rawJid;
+        const row = await this.prisma.waMessage
+          .update({
+            where: { accountId_chatJid_id: { accountId, chatJid: jid, id } },
+            data: { starred: update.starred },
+          })
+          .catch(() => null);
+        if (row) this.emit('message', accountId, this.msgRowToDto(accountId, row));
+      }
       if (update.status === undefined || update.status === null) continue;
       // Le message est stocké sous le JID canonique (téléphone) ; l'accusé peut
       // arriver sous le JID @lid -> on canonicalise pour retrouver le message.
@@ -1211,6 +1252,7 @@ export class WhatsappService
             lastMessageAt: lastAt,
             ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
             ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
+            ...(meta.pinned !== undefined ? { pinned: meta.pinned } : {}),
           },
           update: {
             name: name ?? undefined,
@@ -1218,6 +1260,7 @@ export class WhatsappService
             lastMessageAt: lastAt ?? undefined,
             ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
             ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
+            ...(meta.pinned !== undefined ? { pinned: meta.pinned } : {}),
           },
         })
         .catch(() => undefined);
@@ -1274,6 +1317,11 @@ export class WhatsappService
         .createMany({ data: rows.slice(i, i + 500), skipDuplicates: true })
         .catch(() => undefined);
     }
+    // L'historique pose la date des discussions mais pas leur aperçu : on le
+    // recale sur le dernier message réellement stocké.
+    for (const chatJid of new Set(rows.map((r) => r.chatJid))) {
+      await this.refreshChatPreview(accountId, chatJid);
+    }
 
     const chats = await this.listChats(accountId);
     this.emit('chats', accountId, chats);
@@ -1289,7 +1337,11 @@ export class WhatsappService
   private chatMetaOf(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ch: any,
-  ): { archived: boolean | undefined; muted: boolean | undefined } {
+  ): {
+    archived: boolean | undefined;
+    muted: boolean | undefined;
+    pinned: boolean | undefined;
+  } {
     const archived =
       typeof ch?.archived === 'boolean' ? ch.archived : undefined;
     let muted: boolean | undefined;
@@ -1305,7 +1357,15 @@ export class WhatsappService
       else if (ms < EPOCH_FLOOR_MS) muted = true; // durée relative => muet
       else muted = ms > Date.now(); // timestamp absolu => muet si futur
     }
-    return { archived, muted };
+    // ch.pinned : horodatage d'épinglage (s) ; null/0 = non épinglé. Absent
+    // (undefined) = info non fournie -> on ne touche pas la colonne.
+    let pinned: boolean | undefined;
+    if (ch?.pinned !== undefined) {
+      const p = ch.pinned;
+      const n = typeof p === 'number' ? p : p == null ? 0 : Number(p);
+      pinned = !Number.isNaN(n) && n > 0;
+    }
+    return { archived, muted, pinned };
   }
 
   private async onChatsUpsert(
@@ -1328,12 +1388,14 @@ export class WhatsappService
             unreadCount: ch.unreadCount ?? 0,
             ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
             ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
+            ...(meta.pinned !== undefined ? { pinned: meta.pinned } : {}),
           },
           update: {
             name: name ?? undefined,
             unreadCount: ch.unreadCount ?? undefined,
             ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
             ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
+            ...(meta.pinned !== undefined ? { pinned: meta.pinned } : {}),
           },
         })
         .catch(() => null);
@@ -1350,7 +1412,13 @@ export class WhatsappService
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     updates: any[],
   ): Promise<void> {
-    for (const ch of updates) {
+    // Lu AVANT le premier await : l'événement vient-il de la relecture
+    // complète de l'app-state ? Dans ce cas on ne garde QUE l'épinglage :
+    // un « lu » ou un « archivé » ancien rejoué écraserait l'état réel
+    // (nouveaux messages arrivés depuis).
+    const replay = this.ensureSession(accountId).chatStateReplay;
+    for (const raw of updates) {
+      const ch = replay ? { id: raw?.id, pinned: raw?.pinned } : raw;
       if (!ch?.id || this.isIgnoredChat(ch.id)) continue;
       const hasUnread = typeof ch.unreadCount === 'number';
       const meta = this.chatMetaOf(ch);
@@ -1359,7 +1427,8 @@ export class WhatsappService
         !hasUnread &&
         !ch.name &&
         meta.archived === undefined &&
-        meta.muted === undefined
+        meta.muted === undefined &&
+        meta.pinned === undefined
       ) {
         continue;
       }
@@ -1380,10 +1449,17 @@ export class WhatsappService
         meta.muted = undefined;
       }
       if (
+        meta.pinned !== undefined &&
+        this.isMetaGuarded(accountId, jid, 'pinned')
+      ) {
+        meta.pinned = undefined;
+      }
+      if (
         !hasUnread &&
         !subject &&
         meta.archived === undefined &&
-        meta.muted === undefined
+        meta.muted === undefined &&
+        meta.pinned === undefined
       ) {
         continue; // plus rien à écrire après suppression de l'écho gardé
       }
@@ -1400,12 +1476,14 @@ export class WhatsappService
             unreadCount: unread ?? 0,
             ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
             ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
+            ...(meta.pinned !== undefined ? { pinned: meta.pinned } : {}),
           },
           update: {
             ...(unread !== undefined ? { unreadCount: unread } : {}),
             ...(subject ? { name } : {}),
             ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
             ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
+            ...(meta.pinned !== undefined ? { pinned: meta.pinned } : {}),
           },
         })
         .catch(() => null);
@@ -1698,6 +1776,9 @@ export class WhatsappService
     chatJid: string,
     text: string,
     clientId: string,
+    quotedId?: string,
+    mentions?: string[],
+    forwarded = false,
   ): Promise<WaMessage> {
     const s = this.ensureSession(accountId);
     if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
@@ -1705,7 +1786,30 @@ export class WhatsappService
     }
     // Le numéro @s.whatsapp.net est toujours une cible d'envoi valide.
     const target = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
-    const sent = await s.sock.sendMessage(target, { text });
+    // Réponse : le message cité doit exister dans CETTE discussion, sinon on
+    // refuse (jamais d'envoi « au hasard » sans la citation demandée).
+    const quoted = quotedId
+      ? await this.quotedFor(accountId, target, quotedId)
+      : undefined;
+    // Mentions : groupes seulement, JIDs WhatsApp valides, 50 max.
+    const mentioned =
+      isJidGroup(target) && mentions?.length
+        ? [...new Set(mentions)]
+            .filter((j) => /^[0-9]+@(s\.whatsapp\.net|lid)$/.test(j))
+            .slice(0, 50)
+        : [];
+    const sent = await s.sock.sendMessage(
+      target,
+      {
+        text,
+        ...(mentioned.length ? { mentions: mentioned } : {}),
+        // Transfert : WhatsApp affiche « Transféré » sur le message.
+        ...(forwarded
+          ? { contextInfo: { isForwarded: true, forwardingScore: 1 } }
+          : {}),
+      },
+      quoted ? { quoted } : undefined,
+    );
     const msg = sent ? mapWaMessage(sent, s.sock.user?.id, accountId) : null;
     if (!msg) throw new Error("Échec de l'envoi");
     msg.chatJid = this.canonicalJid(accountId, msg.chatJid) ?? msg.chatJid;
@@ -1720,6 +1824,302 @@ export class WhatsappService
     this.emit('message', accountId, msg);
     if (chat) this.emit('chat-upsert', accountId, chat);
     return msg;
+  }
+
+  // Reconstruit le message cité au format Baileys (clé + contenu) à partir de
+  // la base.
+  private async quotedFor(
+    accountId: string,
+    chatJid: string,
+    id: string,
+  ): Promise<WAMessage> {
+    const row = await this.prisma.waMessage
+      .findUnique({
+        where: { accountId_chatJid_id: { accountId, chatJid, id } },
+        select: {
+          id: true,
+          fromMe: true,
+          senderJid: true,
+          text: true,
+          type: true,
+        },
+      })
+      .catch(() => null);
+    if (!row) throw new Error('Message cité introuvable');
+    // Contenu minimal, sans octets de média : le message brut stocké en JSON
+    // ne se ré-encode pas fiablement en protobuf. WhatsApp affiche la citation
+    // à partir du type + texte/légende.
+    const caption = row.text ?? undefined;
+    const content: proto.IMessage =
+      row.type === WaMessageType.IMAGE
+        ? { imageMessage: { caption } }
+        : row.type === WaMessageType.VIDEO
+          ? { videoMessage: { caption } }
+          : row.type === WaMessageType.AUDIO
+            ? { audioMessage: {} }
+            : row.type === WaMessageType.DOCUMENT
+              ? { documentMessage: { caption } }
+              : row.type === WaMessageType.STICKER
+                ? { stickerMessage: {} }
+                : { conversation: row.text ?? '' };
+    const isGroup = isJidGroup(chatJid) ?? false;
+    return {
+      key: {
+        remoteJid: chatJid,
+        id: row.id,
+        fromMe: row.fromMe,
+        ...(isGroup && !row.fromMe && row.senderJid
+          ? { participant: row.senderJid }
+          : {}),
+      },
+      message: content,
+    };
+  }
+
+  // Modifie le texte d'un de SES messages texte. Mêmes règles que WhatsApp :
+  // 15 min max après l'envoi. Tout est vérifié ici, côté serveur (propriété,
+  // type, délai), quel que soit ce que le front affiche.
+  async editMessage(
+    accountId = DEFAULT_ACCOUNT_ID,
+    chatJid: string,
+    messageId: string,
+    newText: string,
+  ): Promise<void> {
+    const s = this.ensureSession(accountId);
+    if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
+      throw new Error('WhatsApp non connecté');
+    }
+    const text = newText.trim();
+    if (!text) throw new Error('Texte vide');
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    const row = await this.prisma.waMessage
+      .findUnique({
+        where: { accountId_chatJid_id: { accountId, chatJid: jid, id: messageId } },
+        select: { id: true, fromMe: true, type: true, text: true, sentAt: true },
+      })
+      .catch(() => null);
+    if (!row) throw new Error('Message introuvable');
+    if (!row.fromMe) throw new Error('Seuls vos propres messages sont modifiables');
+    if (row.type !== WaMessageType.TEXT) {
+      throw new Error('Seuls les messages texte sont modifiables');
+    }
+    if (Date.now() - row.sentAt.getTime() > WhatsappService.EDIT_WINDOW_MS) {
+      throw new Error('Délai de modification dépassé (15 min)');
+    }
+    if (row.text === text) return; // rien à changer
+    await this.withTimeout(
+      s.sock.sendMessage(jid, {
+        text,
+        edit: { remoteJid: jid, id: row.id, fromMe: true },
+      }),
+      WhatsappService.REACTION_TIMEOUT_MS,
+    );
+    // Reflète tout de suite (l'écho WhatsApp refera la même chose).
+    await this.applyEdit(accountId, jid, row.id, text);
+    await this.refreshChatPreview(accountId, jid, true);
+  }
+
+  // Supprime un message.
+  // - 'everyone' : révocation WhatsApp, seulement SES messages, 48 h max ;
+  //   le contact voit « Ce message a été supprimé ».
+  // - 'me' : retiré de la base locale + synchro « supprimer pour moi » vers
+  //   ses propres appareils (best-effort) ; le contact ne voit rien.
+  // Règles vérifiées ici, côté serveur.
+  async deleteMessage(
+    accountId = DEFAULT_ACCOUNT_ID,
+    chatJid: string,
+    messageId: string,
+    scope: 'me' | 'everyone',
+  ): Promise<void> {
+    if (scope !== 'me' && scope !== 'everyone') {
+      throw new Error('Portée de suppression invalide');
+    }
+    const s = this.ensureSession(accountId);
+    if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
+      throw new Error('WhatsApp non connecté');
+    }
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    const where = {
+      accountId_chatJid_id: { accountId, chatJid: jid, id: messageId },
+    };
+    const row = await this.prisma.waMessage
+      .findUnique({
+        where,
+        select: { id: true, fromMe: true, senderJid: true, sentAt: true, type: true },
+      })
+      .catch(() => null);
+    if (!row) throw new Error('Message introuvable');
+    const key = {
+      remoteJid: jid,
+      id: row.id,
+      fromMe: row.fromMe,
+      ...(isJidGroup(jid) && !row.fromMe && row.senderJid
+        ? { participant: row.senderJid }
+        : {}),
+    };
+
+    if (scope === 'everyone') {
+      if (!row.fromMe) {
+        throw new Error('Seuls vos propres messages peuvent être supprimés pour tous');
+      }
+      if (row.type === WaMessageType.SYSTEM) {
+        throw new Error('Message déjà supprimé');
+      }
+      if (Date.now() - row.sentAt.getTime() > WhatsappService.REVOKE_WINDOW_MS) {
+        throw new Error('Délai dépassé pour supprimer pour tout le monde (48 h)');
+      }
+      await this.withTimeout(
+        s.sock.sendMessage(jid, { delete: key }),
+        WhatsappService.REACTION_TIMEOUT_MS,
+      );
+      await this.applyRevoke(accountId, jid, row.id);
+      await this.refreshChatPreview(accountId, jid, true);
+      return;
+    }
+
+    // Pour moi : local d'abord (autoritaire), puis synchro de ses appareils.
+    await this.prisma.waMessage.delete({ where }).catch(() => null);
+    this.emit('message-deleted', accountId, { id: row.id, chatJid: jid });
+    await this.refreshChatPreview(accountId, jid, true);
+    void this.syncChatModify(
+      accountId,
+      jid,
+      {
+        deleteForMe: {
+          deleteMedia: false,
+          key,
+          timestamp: Math.floor(row.sentAt.getTime() / 1000),
+        },
+      },
+      'deleteForMe',
+    );
+  }
+
+  // Message important (étoile) : local d'abord, puis synchro de ses appareils
+  // (best-effort). Rien n'est envoyé au contact.
+  async setStarred(
+    accountId = DEFAULT_ACCOUNT_ID,
+    chatJid: string,
+    messageId: string,
+    starred: boolean,
+  ): Promise<void> {
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    const row = await this.prisma.waMessage
+      .update({
+        where: { accountId_chatJid_id: { accountId, chatJid: jid, id: messageId } },
+        data: { starred },
+      })
+      .catch(() => null);
+    if (!row) return;
+    this.emit('message', accountId, this.msgRowToDto(accountId, row));
+    void this.syncChatModify(
+      accountId,
+      jid,
+      { star: { messages: [{ id: row.id, fromMe: row.fromMe }], star: starred } },
+      'star',
+    );
+  }
+
+  // Messages importants du compte, récents d'abord (bornés).
+  async listStarred(accountId = DEFAULT_ACCOUNT_ID): Promise<WaMessage[]> {
+    const rows = await this.prisma.waMessage
+      .findMany({
+        where: { accountId, starred: true },
+        orderBy: { sentAt: 'desc' },
+        take: 200,
+      })
+      .catch(() => []);
+    return rows.map((r) => this.msgRowToDto(accountId, r));
+  }
+
+  // Transfère UN message vers UNE discussion (déclenché par la fenêtre de
+  // confirmation du front). Texte : renvoyé avec la mention « Transféré ».
+  // Média : téléchargé puis renvoyé avec sa légende. Autres types refusés.
+  async forwardMessage(
+    accountId = DEFAULT_ACCOUNT_ID,
+    chatJid: string,
+    messageId: string,
+    toJid: string,
+  ): Promise<WaMessage> {
+    if (!/^[0-9]+@(s\.whatsapp\.net|g\.us|lid)$/.test(toJid)) {
+      throw new Error('Destinataire invalide');
+    }
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    const row = await this.prisma.waMessage
+      .findUnique({
+        where: { accountId_chatJid_id: { accountId, chatJid: jid, id: messageId } },
+        select: { id: true, type: true, text: true },
+      })
+      .catch(() => null);
+    if (!row) throw new Error('Message introuvable');
+    if (row.type === WaMessageType.TEXT) {
+      if (!row.text?.trim()) throw new Error('Message vide');
+      return this.sendText(accountId, toJid, row.text, randomUUID(), undefined, undefined, true);
+    }
+    if ((WhatsappService.MEDIA_TYPES as readonly string[]).includes(row.type)) {
+      const media = await this.getMedia(accountId, jid, row.id);
+      return this.sendMedia(
+        accountId,
+        toJid,
+        {
+          buffer: media.buffer,
+          mimetype: media.mimetype,
+          originalname: media.fileName ?? 'fichier',
+        },
+        row.text ?? undefined,
+      );
+    }
+    throw new Error('Ce type de message ne peut pas être transféré');
+  }
+
+  // Réagit (emoji) à un message, ou retire sa réaction (emoji = ''). Envoyé
+  // UNIQUEMENT sur clic explicite de l'utilisateur (socket 'wa:react').
+  async sendReaction(
+    accountId = DEFAULT_ACCOUNT_ID,
+    chatJid: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<void> {
+    const s = this.ensureSession(accountId);
+    if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
+      throw new Error('WhatsApp non connecté');
+    }
+    const text = emoji.trim();
+    // Une réaction = un seul emoji (ou '' pour retirer) : jamais du texte libre.
+    // Hors liants (ZWJ, VS16) : seulement pictogrammes, drapeaux, teintes de
+    // peau et tags. Rien d'autre.
+    const core = text.replace(/\u200d|\ufe0f/gu, '');
+    const isEmoji =
+      /^[\p{Extended_Pictographic}\p{Regional_Indicator}\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}]+$/u.test(
+        core,
+      ) &&
+      /[\p{Extended_Pictographic}\p{Regional_Indicator}]/u.test(core) &&
+      [...text].length <= 12;
+    if (text !== '' && !isEmoji) throw new Error('Réaction invalide');
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    const target = await this.prisma.waMessage
+      .findUnique({
+        where: { accountId_chatJid_id: { accountId, chatJid: jid, id: messageId } },
+        select: { id: true, fromMe: true, senderJid: true },
+      })
+      .catch(() => null);
+    if (!target) throw new Error('Message introuvable');
+    const key = {
+      remoteJid: jid,
+      id: target.id,
+      fromMe: target.fromMe,
+      // En groupe, la cible est identifiée par son auteur.
+      ...(isJidGroup(jid) && !target.fromMe && target.senderJid
+        ? { participant: target.senderJid }
+        : {}),
+    };
+    const sent = await this.withTimeout(
+      s.sock.sendMessage(jid, { react: { text, key } }),
+      WhatsappService.REACTION_TIMEOUT_MS,
+    );
+    // Reflète tout de suite (l'écho messages.upsert fera la même chose,
+    // handleReaction est idempotent).
+    if (sent) await this.handleReaction(accountId, sent);
   }
 
   // Envoi d'un média (image/vidéo/audio/document) depuis le pont vers WhatsApp.
@@ -1829,29 +2229,21 @@ export class WhatsappService
   private guardLocalMeta(
     accountId: string,
     jid: string,
-    field: 'archived' | 'muted',
+    field: MetaField,
   ): void {
     const s = this.ensureSession(accountId);
-    const until = Date.now() + WhatsappService.LOCAL_META_GUARD_MS;
-    const cur = s.localMetaGuard.get(jid) ?? {
-      archivedUntil: 0,
-      mutedUntil: 0,
-    };
-    if (field === 'archived') cur.archivedUntil = until;
-    else cur.mutedUntil = until;
+    const cur = s.localMetaGuard.get(jid) ?? {};
+    cur[field] = Date.now() + WhatsappService.LOCAL_META_GUARD_MS;
     s.localMetaGuard.set(jid, cur);
   }
 
   private isMetaGuarded(
     accountId: string,
     jid: string,
-    field: 'archived' | 'muted',
+    field: MetaField,
   ): boolean {
     const s = this.ensureSession(accountId);
-    const g = s.localMetaGuard.get(jid);
-    if (!g) return false;
-    const until = field === 'archived' ? g.archivedUntil : g.mutedUntil;
-    return until > Date.now();
+    return (s.localMetaGuard.get(jid)?.[field] ?? 0) > Date.now();
   }
 
   async setArchived(
@@ -1909,6 +2301,201 @@ export class WhatsappService
       { mute: muted ? 8 * 60 * 60 * 1000 : null },
       'mute',
     );
+  }
+
+  // Dernier message d'une discussion au format attendu par chatModify
+  // (archive, lu/non lu, suppression de discussion).
+  private async lastMessagesFor(
+    accountId: string,
+    jid: string,
+  ): Promise<{ key: { remoteJid: string; id: string; fromMe: boolean }; messageTimestamp: number }[]> {
+    const last = await this.prisma.waMessage
+      .findFirst({
+        where: { accountId, chatJid: jid },
+        orderBy: { sentAt: 'desc' },
+        select: { id: true, fromMe: true, sentAt: true },
+      })
+      .catch(() => null);
+    return last
+      ? [
+          {
+            key: { remoteJid: jid, id: last.id, fromMe: last.fromMe },
+            messageTimestamp: Math.floor(last.sentAt.getTime() / 1000),
+          },
+        ]
+      : [];
+  }
+
+  // Infos d'un groupe : sujet, description, participants (admins d'abord,
+  // puis par nom). Lecture seule.
+  async getGroupInfo(accountId = DEFAULT_ACCOUNT_ID, jid: string): Promise<WaGroupInfo> {
+    const s = this.ensureSession(accountId);
+    if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
+      throw new Error('WhatsApp non connecté');
+    }
+    if (!isJidGroup(jid)) throw new Error("Ce n'est pas un groupe");
+    const meta = await this.withTimeout(
+      s.sock.groupMetadata(jid),
+      WhatsappService.REACTION_TIMEOUT_MS,
+    );
+    const me = s.sock.user?.id ? jidNormalizedUser(s.sock.user.id) : null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const myLid = (s.sock.user as any)?.lid
+      ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        jidNormalizedUser((s.sock.user as any).lid)
+      : null;
+    const participants = [];
+    for (const p of meta.participants ?? []) {
+      const id = jidNormalizedUser(p.id);
+      const canon = this.canonicalJid(accountId, id) ?? id;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pn = (p as any).phoneNumber ? jidNormalizedUser((p as any).phoneNumber) : null;
+      const name =
+        (await this.nameFor(accountId, canon)) ??
+        (pn ? await this.nameFor(accountId, pn) : null) ??
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        cleanName((p as any).notify ?? (p as any).name ?? null);
+      participants.push({
+        jid: id,
+        name,
+        admin: (p.admin as 'admin' | 'superadmin' | null | undefined) ?? null,
+        isMe: id === me || id === myLid || canon === me || pn === me,
+      });
+    }
+    participants.sort(
+      (a, b) =>
+        Number(b.isMe) - Number(a.isMe) ||
+        Number(Boolean(b.admin)) - Number(Boolean(a.admin)) ||
+        (a.name ?? '~').localeCompare(b.name ?? '~', 'fr', { sensitivity: 'base' }),
+    );
+    return {
+      jid,
+      subject: cleanName(meta.subject ?? null),
+      description: meta.desc ? String(meta.desc) : null,
+      participants,
+    };
+  }
+
+  // Quitte un groupe. Action visible des membres : déclenchée uniquement par
+  // la fenêtre de confirmation du front.
+  async leaveGroup(accountId = DEFAULT_ACCOUNT_ID, jid: string): Promise<void> {
+    const s = this.ensureSession(accountId);
+    if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
+      throw new Error('WhatsApp non connecté');
+    }
+    if (!isJidGroup(jid)) throw new Error("Ce n'est pas un groupe");
+    await this.withTimeout(s.sock.groupLeave(jid), WhatsappService.REACTION_TIMEOUT_MS);
+    this.logger.log(`[${accountId}] groupe quitté ${jid}`);
+  }
+
+  // Marque une discussion « non lue » (pastille sans nombre, comme WhatsApp).
+  // Réglage de TES appareils : aucun accusé n'est envoyé au contact.
+  async markUnread(accountId = DEFAULT_ACCOUNT_ID, chatJid: string): Promise<void> {
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    const row = await this.prisma.waChat
+      .update({ where: { accountId_jid: { accountId, jid } }, data: { unreadCount: -1 } })
+      .catch(() => null);
+    if (row) this.emit('chat-upsert', accountId, this.chatRowToDto(accountId, row));
+    const lastMessages = await this.lastMessagesFor(accountId, jid);
+    void this.syncChatModify(accountId, jid, { markRead: false, lastMessages }, 'markUnread');
+  }
+
+  // Supprime une discussion de TES appareils (messages compris). Le contact
+  // n'en voit rien. Local d'abord (autoritaire), puis synchro best-effort.
+  async deleteChat(accountId = DEFAULT_ACCOUNT_ID, chatJid: string): Promise<void> {
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    const lastMessages = await this.lastMessagesFor(accountId, jid);
+    await this.prisma.waMessage
+      .deleteMany({ where: { accountId, chatJid: jid } })
+      .catch(() => undefined);
+    await this.prisma.waChat
+      .deleteMany({ where: { accountId, jid } })
+      .catch(() => undefined);
+    this.emit('chats', accountId, await this.listChats(accountId));
+    if (lastMessages.length) {
+      void this.syncChatModify(accountId, jid, { delete: true, lastMessages }, 'deleteChat');
+    }
+  }
+
+  // Épingle / désépingle une discussion. Comme WhatsApp, au plus
+  // MAX_PINNED discussions épinglées par compte : au-delà, refus silencieux
+  // (le front désactive déjà le bouton). Mutation app-state de TES appareils
+  // uniquement : aucun message n'est envoyé au contact.
+  async setPinned(
+    accountId = DEFAULT_ACCOUNT_ID,
+    chatJid: string,
+    pinned: boolean,
+  ): Promise<void> {
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    if (pinned) {
+      const count = await this.prisma.waChat
+        .count({ where: { accountId, pinned: true, NOT: { jid } } })
+        .catch(() => 0);
+      if (count >= WhatsappService.MAX_PINNED) {
+        this.logger.warn(`pin refusé ${jid}: déjà ${count} épinglées`);
+        await this.emitChatRefresh(accountId, jid);
+        return;
+      }
+    }
+    this.guardLocalMeta(accountId, jid, 'pinned');
+    // 1) État local autoritaire d'abord (cf. setArchived).
+    const row = await this.prisma.waChat
+      .update({ where: { accountId_jid: { accountId, jid } }, data: { pinned } })
+      .catch(() => null);
+    if (row) this.emit('chat-upsert', accountId, this.chatRowToDto(accountId, row));
+    // 2) Synchro WhatsApp best-effort, sans bloquer.
+    void this.syncChatModify(accountId, jid, { pin: pinned }, 'pin');
+  }
+
+  // Relecture complète, UNE FOIS par compte, de la collection app-state
+  // « regular_low » (épinglage, étoiles, archivage, lu/non lu). v2 : relance
+  // pour importer aussi les messages importants. Les épinglages faits
+  // sur le téléphone avant que le pont ne sache les lire n'arrivent sinon
+  // jamais : Baileys ne rejoue que les changements postérieurs à la version
+  // déjà connue. On efface cette version pour forcer un instantané complet ;
+  // Baileys réémet alors chats.update pour chaque discussion, que
+  // onChatsUpdate enregistre. Lecture seule côté WhatsApp : rien n'est envoyé
+  // aux contacts. En cas d'échec, la version précédente est restaurée.
+  private async resyncChatStateOnce(accountId: string): Promise<void> {
+    const s = this.ensureSession(accountId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sock = s.sock as any;
+    if (!sock || s.connection.state !== ConnectionState.OPEN) return;
+    const mark = join(s.authDir, WhatsappService.CHAT_STATE_RESYNC_MARK);
+    if (await stat(mark).then(() => true, () => false)) return;
+    const keys = sock.authState?.keys;
+    if (!keys || typeof sock.resyncAppState !== 'function') return;
+    const name = 'regular_low';
+    const prev = (await keys.get('app-state-sync-version', [name]))?.[name];
+    try {
+      await keys.set({ 'app-state-sync-version': { [name]: null } });
+      s.chatStateReplay = true;
+      try {
+        await this.withTimeout(
+          sock.resyncAppState([name], false) as Promise<unknown>,
+          WhatsappService.CHAT_STATE_RESYNC_TIMEOUT_MS,
+        );
+      } finally {
+        s.chatStateReplay = false;
+      }
+      // Laisse les handlers asynchrones (déclenchés au flush) écrire en base.
+      await new Promise((r) => setTimeout(r, 3_000));
+      await writeFile(mark, new Date().toISOString());
+      const pinned = await this.prisma.waChat
+        .count({ where: { accountId, pinned: true } })
+        .catch(() => -1);
+      this.logger.log(
+        `[${accountId}] état des discussions relu depuis WhatsApp (${pinned} épinglée(s))`,
+      );
+      this.emit('chats', accountId, await this.listChats(accountId));
+    } catch (e) {
+      this.logger.warn(`[${accountId}] relecture app-state échouée: ${e}`);
+      if (prev) {
+        await keys
+          .set({ 'app-state-sync-version': { [name]: prev } })
+          .catch(() => undefined);
+      }
+    }
   }
 
   // Pousse une mutation app-state vers WhatsApp sans jamais bloquer l'appelant.
@@ -2356,7 +2943,14 @@ export class WhatsappService
   async listChats(accountId = DEFAULT_ACCOUNT_ID): Promise<WaChat[]> {
     const rows = await this.prisma.waChat.findMany({
       where: { accountId },
-      orderBy: [{ lastMessageAt: 'desc' }],
+      // NULLS LAST : par défaut Postgres trie les NULL en tête d'un DESC. Les
+      // centaines de discussions sans date (contacts croisés en groupe, jamais
+      // écrits) remplissaient alors les 500 places et chassaient les vraies.
+      // Épinglées d'abord (jamais coupées par le take), puis par date.
+      orderBy: [
+        { pinned: 'desc' },
+        { lastMessageAt: { sort: 'desc', nulls: 'last' } },
+      ],
       take: 500,
     });
     // Les conteneurs de communauté (parents) ne sont pas des discussions : on
@@ -2371,8 +2965,43 @@ export class WhatsappService
     return rows
       .filter((r) => !this.isIgnoredChat(r.jid))
       .filter((r) => !this.isPlaceholderChat(r))
+      .filter((r) => !this.isEmptyDirectChat(r))
       .filter((r) => !communityJids.has(r.jid))
       .map((r) => this.chatRowToDto(accountId, r));
+  }
+
+  // Carnet du compte : contacts 1:1 joignables par numéro (JID pn), un par
+  // personne, avec le meilleur nom (carnet > pseudo). Enregistrés d'abord,
+  // puis ordre alphabétique. Lecture seule.
+  async listContacts(accountId = DEFAULT_ACCOUNT_ID): Promise<WaContactEntry[]> {
+    const rows = await this.prisma.waContact
+      .findMany({
+        where: { accountId, isGroup: false },
+        select: { jid: true, name: true, pushName: true },
+      })
+      .catch(() => [] as { jid: string; name: string | null; pushName: string | null }[]);
+    const byJid = new Map<string, WaContactEntry>();
+    for (const r of rows) {
+      const jid = this.canonicalJid(accountId, r.jid) ?? r.jid;
+      if (!jid.endsWith('@s.whatsapp.net')) continue; // @lid sans numéro connu
+      // Un « nom » sans lettre (« +33∙∙∙∙∙84 », numéro brut) n'est pas un vrai
+      // nom de carnet : on lui préfère le pseudo s'il en a un.
+      const letter = (v: string | null) => v !== null && /\p{L}/u.test(v);
+      const rawSaved = cleanName(r.name);
+      const push = cleanName(r.pushName);
+      const saved = letter(rawSaved) ? rawSaved : null;
+      const name = saved ?? (letter(push) ? push : (rawSaved ?? push));
+      if (!name) continue;
+      const prev = byJid.get(jid);
+      if (!prev || (saved && !prev.saved)) {
+        byJid.set(jid, { jid, name, saved: saved !== null });
+      }
+    }
+    return [...byJid.values()].sort(
+      (a, b) =>
+        Number(b.saved) - Number(a.saved) ||
+        a.name.localeCompare(b.name, 'fr', { sensitivity: 'base' }),
+    );
   }
 
   // Communautés du compte (regroupent des groupes) — vue lecture seule.
@@ -2399,6 +3028,19 @@ export class WhatsappService
     lastMessagePreview: string | null;
   }): boolean {
     return !cleanName(r.name) && !cleanName(r.lastMessagePreview);
+  }
+
+  // Discussion 1:1 sans aucun échange : ni date ni aperçu. La synchro
+  // d'historique en crée une pour chaque personne croisée dans un groupe ; ce
+  // n'est pas une conversation, WhatsApp ne l'affiche pas non plus.
+  private isEmptyDirectChat(r: {
+    isGroup: boolean;
+    lastMessageAt: Date | null;
+    lastMessagePreview: string | null;
+  }): boolean {
+    return (
+      !r.isGroup && r.lastMessageAt === null && !cleanName(r.lastMessagePreview)
+    );
   }
 
   async listMessages(
@@ -2430,11 +3072,21 @@ export class WhatsappService
     accountId = DEFAULT_ACCOUNT_ID,
     q: string,
     limit: number,
+    chatJid?: string,
   ): Promise<WaMessage[]> {
     if (!q.trim()) return [];
     const take = Math.min(Math.max(limit, 1), 50);
+    const jid = chatJid
+      ? ((await this.resolvePn(accountId, chatJid)) ?? chatJid)
+      : undefined;
     const rows = await this.prisma.waMessage.findMany({
-      where: { accountId, text: { contains: q, mode: 'insensitive' } },
+      where: {
+        accountId,
+        ...(jid ? { chatJid: jid } : {}),
+        // Les placeholders « message supprimé » ne sont pas des résultats.
+        type: { not: WaMessageType.SYSTEM },
+        text: { contains: q.trim(), mode: 'insensitive' },
+      },
       orderBy: { sentAt: 'desc' },
       take,
     });
@@ -2602,6 +3254,7 @@ export class WhatsappService
     for (const r of rows) {
       if (this.isIgnoredChat(r.jid)) continue;
       if (this.isPlaceholderChat(r)) continue;
+      if (this.isEmptyDirectChat(r)) continue;
       // Canonicalise (@lid -> pn via le cache mémoire du compte, comme
       // chatRowToDto) pour regrouper le même numéro à travers les comptes.
       const jid = this.canonicalJid(r.accountId, r.jid) ?? r.jid;
@@ -2925,11 +3578,24 @@ export class WhatsappService
     incrementUnread = false,
   ): Promise<WaChat | null> {
     const name = await this.nameFor(accountId, m.chatJid);
-    const at = new Date(m.timestamp || Date.now());
-    const preview = previewOf({
-      ...m,
-      text: this.resolveMentions(accountId, m.text),
-    });
+    // L'aperçu reflète le DERNIER message stocké, pas celui qu'on traite : un
+    // message plus ancien livré en retard (reconnexion, synchro) ne doit pas
+    // écraser l'aperçu ni reculer la date. m est déjà persisté par l'appelant.
+    const latest = await this.latestMessageOf(accountId, m.chatJid);
+    const msgAt = new Date(m.timestamp || Date.now());
+    const preview = latest
+      ? latest.preview
+      : previewOf({ ...m, text: this.resolveMentions(accountId, m.text) });
+    const existing = await this.prisma.waChat
+      .findUnique({
+        where: { accountId_jid: { accountId, jid: m.chatJid } },
+        select: { lastMessageAt: true },
+      })
+      .catch(() => null);
+    let at = latest?.at ?? msgAt;
+    if (existing?.lastMessageAt && existing.lastMessageAt > at) {
+      at = existing.lastMessageAt;
+    }
     const row = await this.prisma.waChat
       .upsert({
         where: { accountId_jid: { accountId, jid: m.chatJid } },
@@ -2951,6 +3617,80 @@ export class WhatsappService
       })
       .catch(() => null);
     return row ? this.chatRowToDto(accountId, row) : null;
+  }
+
+  // Dernier message stocké d'une discussion et son aperçu (mentions résolues).
+  private async latestMessageOf(
+    accountId: string,
+    chatJid: string,
+  ): Promise<{ at: Date; preview: string | null } | null> {
+    const last = await this.prisma.waMessage
+      .findFirst({
+        where: { accountId, chatJid },
+        orderBy: { sentAt: 'desc' },
+      })
+      .catch(() => null);
+    if (!last) return null;
+    const dto = this.msgRowToDto(accountId, last);
+    return {
+      at: last.sentAt,
+      preview: previewOf({
+        ...dto,
+        text: this.resolveMentions(accountId, dto.text),
+      }),
+    };
+  }
+
+  // Recale aperçu + date d'une discussion existante sur son dernier message
+  // stocké. La date ne recule jamais (l'historique peut connaître un échange
+  // plus récent que ce qui est en base). emit = notifier le front.
+  private async refreshChatPreview(
+    accountId: string,
+    chatJid: string,
+    emit = false,
+  ): Promise<void> {
+    const latest = await this.latestMessageOf(accountId, chatJid);
+    if (!latest) return;
+    const cur = await this.prisma.waChat
+      .findUnique({
+        where: { accountId_jid: { accountId, jid: chatJid } },
+        select: { lastMessageAt: true, lastMessagePreview: true },
+      })
+      .catch(() => null);
+    if (!cur) return;
+    const at =
+      cur.lastMessageAt && cur.lastMessageAt > latest.at
+        ? cur.lastMessageAt
+        : latest.at;
+    if (
+      cur.lastMessagePreview === latest.preview &&
+      cur.lastMessageAt?.getTime() === at.getTime()
+    ) {
+      return; // déjà juste
+    }
+    const row = await this.prisma.waChat
+      .update({
+        where: { accountId_jid: { accountId, jid: chatJid } },
+        data: { lastMessageAt: at, lastMessagePreview: latest.preview },
+      })
+      .catch(() => null);
+    if (row && emit) {
+      this.emit('chat-upsert', accountId, this.chatRowToDto(accountId, row));
+    }
+  }
+
+  // Passe sur toutes les discussions ayant des messages (au démarrage).
+  private async repairChatPreviews(accountId: string): Promise<void> {
+    try {
+      const groups = await this.prisma.waMessage.groupBy({
+        by: ['chatJid'],
+        where: { accountId },
+      });
+      for (const g of groups) await this.refreshChatPreview(accountId, g.chatJid);
+      this.logger.log(`aperçus recalés (${groups.length} discussions) [${accountId}]`);
+    } catch (e) {
+      this.logger.warn(`repairChatPreviews: ${e}`);
+    }
   }
 
   private async nameFor(accountId: string, jid: string): Promise<string | null> {
@@ -3307,6 +4047,8 @@ export class WhatsappService
       media: unknown;
       reactions: unknown;
       clientId: string | null;
+      editedAt?: Date | null;
+      starred?: boolean;
     },
   ): WaMessage {
     const dto: WaMessage = {
@@ -3324,6 +4066,8 @@ export class WhatsappService
       media: (row.media as WaMessage['media']) ?? null,
       reactions: (row.reactions as WaReaction[] | null) ?? [],
       clientId: row.clientId,
+      ...(row.editedAt ? { edited: true } : {}),
+      ...(row.starred ? { starred: true } : {}),
     };
     // URL backend du média (servie déchiffrée à la demande).
     this.attachMediaUrl(dto);

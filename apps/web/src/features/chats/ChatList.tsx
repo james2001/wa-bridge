@@ -21,6 +21,19 @@ import AddAccountModal from '../whatsapp/AddAccountModal';
 import RelinkAccountModal from '../whatsapp/RelinkAccountModal';
 import ViewModeToggle from '../whatsapp/ViewModeToggle';
 import { useLogoutMutation } from '../auth/authApi';
+import ThemeToggle from '../ui/ThemeToggle';
+import NewChatModal from './NewChatModal';
+import ChatItemMenu from './ChatItemMenu';
+import SearchResults from '../search/SearchResults';
+import StarredModal from '../search/StarredModal';
+import { useDebounced } from '../../hooks/useDebounced';
+import { useSearchMessagesQuery } from './chatsApi';
+import { setFocusMessage } from '../ui/uiSlice';
+import { draftKey, useDrafts } from '../../lib/drafts';
+import {
+  notificationPermission,
+  requestNotificationPermission,
+} from '../../lib/notify';
 
 type ChatFilter = 'all' | 'unread' | 'groups';
 
@@ -53,6 +66,11 @@ export default function ChatList() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<ChatFilter>('all');
   const [showAddAccount, setShowAddAccount] = useState(false);
+  const [showNewChat, setShowNewChat] = useState(false);
+  const [showStarred, setShowStarred] = useState(false);
+  const drafts = useDrafts();
+  // Autorisation des notifications du navigateur (demandée sur clic).
+  const [notifPerm, setNotifPerm] = useState(notificationPermission);
   const [relinkAccount, setRelinkAccount] = useState<WaAccount | null>(null);
   // Communautés (regroupement des groupes dans l'onglet « Groupes »).
   const { data: communities } = useGetCommunitiesQuery(activeAccountId);
@@ -86,7 +104,10 @@ export default function ChatList() {
     () =>
       chats
         ? [...chats].sort(
-            (a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0),
+            // Épinglées en tête (comme WhatsApp), puis les plus récentes.
+            (a, b) =>
+              Number(b.pinned) - Number(a.pinned) ||
+              (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0),
           )
         : [],
     [chats],
@@ -106,6 +127,12 @@ export default function ChatList() {
   );
 
   const q = query.trim().toLowerCase();
+  // Recherche aussi DANS les messages (à partir de 3 caractères).
+  const msgQ = useDebounced(query.trim(), 300);
+  const { data: msgResults, isFetching: msgFetching } = useSearchMessagesQuery(
+    { accountId: activeAccountId, q: msgQ },
+    { skip: msgQ.length < 3 },
+  );
 
   // Liste principale: filtre d'onglet + recherche (titre ou numéro).
   const visibleActive = useMemo(
@@ -151,11 +178,13 @@ export default function ChatList() {
     { key: 'groups', label: 'Groupes', count: groupCount },
   ];
 
+  const pinnedCount = (chats ?? []).filter((c) => c.pinned).length;
+
   const renderItem = (c: WaChat) => {
     const title = chatTitle(c);
     return (
+      <div key={c.jid} className="convitem-wrap">
       <button
-        key={c.jid}
         className={
           'convitem' + (c.jid === selectedJid ? ' convitem--active' : '')
         }
@@ -195,8 +224,21 @@ export default function ChatList() {
           </div>
           <div className="convitem__bottom">
             <span className="convitem__preview">
-              {c.lastMessagePreview ?? ''}
+              {drafts[draftKey(c.accountId, c.jid)] &&
+              c.jid !== selectedJid ? (
+                <>
+                  <span className="convitem__draft">Brouillon :</span>{' '}
+                  {drafts[draftKey(c.accountId, c.jid)]}
+                </>
+              ) : (
+                (c.lastMessagePreview ?? '')
+              )}
             </span>
+            {c.pinned && (
+              <span className="convitem__pin" title="Épinglée">
+                📌
+              </span>
+            )}
             {c.unreadCount > 0 && (
               <span className="badge">{c.unreadCount}</span>
             )}
@@ -209,6 +251,8 @@ export default function ChatList() {
           </div>
         </div>
       </button>
+      <ChatItemMenu chat={c} pinnedCount={pinnedCount} />
+      </div>
     );
   };
 
@@ -285,6 +329,25 @@ export default function ChatList() {
         </div>
         <div className="sidebar__actions">
           <button
+            type="button"
+            className="iconbtn"
+            title="Nouvelle discussion"
+            aria-label="Nouvelle discussion"
+            onClick={() => setShowNewChat(true)}
+          >
+            ✎
+          </button>
+          <button
+            type="button"
+            className="iconbtn"
+            title="Messages importants"
+            aria-label="Messages importants"
+            onClick={() => setShowStarred(true)}
+          >
+            ★
+          </button>
+          <ThemeToggle />
+          <button
             className="iconbtn"
             title="Se déconnecter"
             onClick={() => {
@@ -314,6 +377,18 @@ export default function ChatList() {
           }}
         />
       </div>
+
+      {notifPerm === 'default' && (
+        <button
+          type="button"
+          className="notifbar"
+          onClick={() => {
+            void requestNotificationPermission().then(setNotifPerm);
+          }}
+        >
+          🔔 Activer les notifications de nouveaux messages
+        </button>
+      )}
 
       <div className="filterbar">
         {filters.map((f) => (
@@ -362,6 +437,23 @@ export default function ChatList() {
           ? renderGroupsGrouped(visibleActive)
           : visibleActive.map(renderItem)}
 
+        {msgQ.length >= 3 && q.length >= 3 && (
+          <div className="search">
+            <h3 className="search__section">Messages</h3>
+            <SearchResults
+              messages={msgResults}
+              isFetching={msgFetching}
+              query={msgQ}
+              chats={chats}
+              onPick={(m) => {
+                setQuery('');
+                dispatch(selectChat(m.chatJid));
+                dispatch(setFocusMessage({ chatJid: m.chatJid, id: m.id }));
+              }}
+            />
+          </div>
+        )}
+
         {!isLoading &&
           !isError &&
           visibleActive.length === 0 &&
@@ -374,6 +466,18 @@ export default function ChatList() {
           )}
       </div>
 
+      {showStarred && (
+        <StarredModal
+          accountId={activeAccountId}
+          onClose={() => setShowStarred(false)}
+        />
+      )}
+      {showNewChat && (
+        <NewChatModal
+          accountId={activeAccountId}
+          onClose={() => setShowNewChat(false)}
+        />
+      )}
       {showAddAccount && (
         <AddAccountModal onClose={() => setShowAddAccount(false)} />
       )}

@@ -19,6 +19,8 @@ import type {
   WaChatsResponse,
   WaConnection,
   WaContactAbout,
+  WaContactsResponse,
+  WaGroupInfo,
   WaCommunitiesResponse,
   WaMessage,
   WaMessageInfoResponse,
@@ -51,6 +53,48 @@ export class WhatsappController {
     @Query('accountId') accountId = 'default',
   ): Promise<WaChatsResponse> {
     return { chats: await this.wa.listChats(accountId) };
+  }
+
+  // Infos d'un groupe (participants, admins, description).
+  @Get('groups/:jid')
+  async group(
+    @Param('jid') jid: string,
+    @Query('accountId') accountId = 'default',
+  ): Promise<WaGroupInfo> {
+    try {
+      return await this.wa.getGroupInfo(accountId, jid);
+    } catch (e) {
+      throw new BadRequestException(e instanceof Error ? e.message : 'group_failed');
+    }
+  }
+
+  // Messages importants (étoile) du compte.
+  @Get('starred')
+  async starred(
+    @Query('accountId') accountId = 'default',
+  ): Promise<{ messages: WaMessage[] }> {
+    return { messages: await this.wa.listStarred(accountId) };
+  }
+
+  // Recherche dans les messages (tout le compte, ou une discussion).
+  @Get('search')
+  async search(
+    @Query('accountId') accountId = 'default',
+    @Query('q') q = '',
+    @Query('chatJid') chatJid?: string,
+  ): Promise<{ messages: WaMessage[] }> {
+    if (q.trim().length < 2) return { messages: [] };
+    return {
+      messages: await this.wa.searchMessages(accountId, q, 50, chatJid || undefined),
+    };
+  }
+
+  // Carnet du compte pour « Nouvelle discussion » (lecture seule).
+  @Get('contacts')
+  async contacts(
+    @Query('accountId') accountId = 'default',
+  ): Promise<WaContactsResponse> {
+    return { contacts: await this.wa.listContacts(accountId) };
   }
 
   // Communautés du compte (regroupent des groupes) — vue lecture seule.

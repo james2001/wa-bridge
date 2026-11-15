@@ -7,6 +7,10 @@ import type {
   WaCommunity,
   WaMediaItem,
   WaContactAbout,
+  WaContactEntry,
+  WaGroupInfo,
+  WaMessage,
+  WaContactsResponse,
 } from '@app/shared-types';
 
 // Argument scopé au compte pour les ressources liées à une discussion.
@@ -53,10 +57,48 @@ export const chatsApi = api.injectEndpoints({
         { type: 'WaCommunities' as const, id: accountId },
       ],
     }),
+    // Infos d'un groupe (participants, admins, description).
+    getGroupInfo: builder.query<WaGroupInfo, AccountJidArg>({
+      query: ({ accountId, jid }) => ({
+        url: `/wa/groups/${encodeURIComponent(jid)}`,
+        params: { accountId },
+      }),
+      keepUnusedDataFor: 60,
+    }),
+    // Messages importants (étoile) du compte.
+    getStarred: builder.query<WaMessage[], string>({
+      query: (accountId) => ({ url: '/wa/starred', params: { accountId } }),
+      transformResponse: (response: { messages: WaMessage[] }) =>
+        response.messages,
+      keepUnusedDataFor: 0,
+    }),
+    // Recherche dans les messages (compte entier ou une discussion).
+    searchMessages: builder.query<
+      WaMessage[],
+      { accountId: string; q: string; chatJid?: string }
+    >({
+      query: ({ accountId, q, chatJid }) => ({
+        url: '/wa/search',
+        params: { accountId, q, ...(chatJid ? { chatJid } : {}) },
+      }),
+      transformResponse: (response: { messages: WaMessage[] }) =>
+        response.messages,
+      keepUnusedDataFor: 30,
+    }),
+    // Carnet du compte (« Nouvelle discussion »), clé de cache = accountId.
+    getContacts: builder.query<WaContactEntry[], string>({
+      query: (accountId) => ({ url: '/wa/contacts', params: { accountId } }),
+      transformResponse: (response: WaContactsResponse) => response.contacts,
+      keepUnusedDataFor: 300,
+    }),
   }),
 });
 
 export const {
+  useGetContactsQuery,
+  useSearchMessagesQuery,
+  useGetStarredQuery,
+  useGetGroupInfoQuery,
   useGetChatsQuery,
   useGetChatMediaQuery,
   useGetContactAboutQuery,

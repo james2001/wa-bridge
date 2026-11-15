@@ -36,6 +36,7 @@ export interface ClientToServerEvents {
       text: string;
       clientId: string;
       quotedId?: string;
+      mentions?: string[]; // JIDs mentionnés (@) dans un groupe
     },
     ack: (res: { ok: boolean; message?: WaMessage; error?: string }) => void,
   ) => void;
@@ -60,6 +61,62 @@ export interface ClientToServerEvents {
 
   // Coupe / réactive les notifications d'une discussion (mute).
   'wa:mute': (input: { accountId?: string; chatJid: string; muted: boolean }) => void;
+
+  // Modifie le texte d'un de SES messages texte (15 min max après l'envoi).
+  'wa:edit': (
+    input: { accountId?: string; chatJid: string; messageId: string; text: string },
+    ack: (res: { ok: boolean; error?: string }) => void,
+  ) => void;
+
+  // Supprime un message : 'me' = pour moi (ses appareils), 'everyone' = pour
+  // tout le monde (ses propres messages, 48 h max).
+  'wa:delete': (
+    input: {
+      accountId?: string;
+      chatJid: string;
+      messageId: string;
+      scope: 'me' | 'everyone';
+    },
+    ack: (res: { ok: boolean; error?: string }) => void,
+  ) => void;
+
+  // Marque / retire un message des « importants » (étoile).
+  'wa:star': (input: {
+    accountId?: string;
+    chatJid: string;
+    messageId: string;
+    starred: boolean;
+  }) => void;
+
+  // Réagit à un message avec un emoji ('' = retire sa réaction).
+  'wa:react': (
+    input: { accountId?: string; chatJid: string; messageId: string; emoji: string },
+    ack: (res: { ok: boolean; error?: string }) => void,
+  ) => void;
+
+  // Épingle / désépingle une discussion (3 au plus par compte, comme WhatsApp).
+  'wa:pin': (input: { accountId?: string; chatJid: string; pinned: boolean }) => void;
+
+  // Marque une discussion comme non lue (réglage de ses appareils).
+  'wa:mark-unread': (input: { accountId?: string; chatJid: string }) => void;
+
+  // Supprime une discussion de ses appareils (le contact n'en voit rien).
+  'wa:delete-chat': (
+    input: { accountId?: string; chatJid: string },
+    ack: (res: { ok: boolean; error?: string }) => void,
+  ) => void;
+
+  // Transfère un message vers UNE discussion (toJid).
+  'wa:forward': (
+    input: { accountId?: string; chatJid: string; messageId: string; toJid: string },
+    ack: (res: { ok: boolean; error?: string }) => void,
+  ) => void;
+
+  // Quitte un groupe (les membres voient « X est parti »).
+  'wa:group-leave': (
+    input: { accountId?: string; chatJid: string },
+    ack: (res: { ok: boolean; error?: string }) => void,
+  ) => void;
 
   // Bloque / débloque un contact (1:1).
   'wa:block': (input: { accountId?: string; chatJid: string; blocked: boolean }) => void;

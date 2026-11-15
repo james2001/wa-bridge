@@ -15,7 +15,14 @@ import {
   setConnection,
   setPresence,
 } from '../features/whatsapp/waSlice';
-import { setChats, upsertChat } from '../features/chats/chatsApi';
+import { chatsApi, setChats, upsertChat } from '../features/chats/chatsApi';
+import { store } from '../app/store';
+import { notifyIncoming } from '../lib/notify';
+import {
+  selectChat,
+  setActiveAccount,
+  setViewMode,
+} from '../features/ui/uiSlice';
 import {
   cacheKey,
   removeMessage,
@@ -83,6 +90,19 @@ export function useSocketBridge(): void {
       );
     };
     const onMessage = (p: { accountId: string; message: WaMessage }) => {
+      // Notification locale (onglet en arrière-plan) — avant la mise à jour
+      // du cache, qui ne change ni le nom ni l'état muet de la discussion.
+      const chat = chatsApi.endpoints.getChats
+        .select(p.accountId)(store.getState())
+        .data?.find((c) => c.jid === p.message.chatJid);
+      notifyIncoming(p.message, {
+        chat,
+        onOpen: () => {
+          dispatch(setViewMode('account'));
+          dispatch(setActiveAccount(p.accountId));
+          dispatch(selectChat(p.message.chatJid));
+        },
+      });
       dispatch(upsertMessage(p.accountId, p.message.chatJid, p.message));
       // Vue fusionnée: patche la timeline de la personne (no-op si non observée).
       dispatch(upsertPersonMessage(p.message));

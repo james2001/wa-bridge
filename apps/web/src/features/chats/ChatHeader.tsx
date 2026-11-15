@@ -5,12 +5,17 @@ import Avatar from '../../components/Avatar';
 import { chatTitle, prettyJid } from './utils';
 import { selectChat, toggleInfoPanel, selectInfoPanelOpen } from '../ui/uiSlice';
 import { selectPresence } from '../whatsapp/waSlice';
-import { archiveChat, muteChat } from '../../services/socket';
+import { archiveChat, muteChat, pinChat } from '../../services/socket';
+import { useGetChatsQuery } from './chatsApi';
+
+// Limite WhatsApp (le backend applique la même).
+const MAX_PINNED = 3;
 
 interface Props {
   chat: WaChat | undefined;
   jid: string;
   accountId: string;
+  onSearch?: () => void;
 }
 
 function presenceText(p: WaPresence | undefined): string | null {
@@ -27,7 +32,7 @@ function presenceText(p: WaPresence | undefined): string | null {
   }
 }
 
-export default function ChatHeader({ chat, jid, accountId }: Props) {
+export default function ChatHeader({ chat, jid, accountId, onSearch }: Props) {
   const dispatch = useAppDispatch();
   const presence = useAppSelector(selectPresence(accountId, jid));
   const infoOpen = useAppSelector(selectInfoPanelOpen);
@@ -36,6 +41,10 @@ export default function ChatHeader({ chat, jid, accountId }: Props) {
 
   const muted = chat?.muted ?? false;
   const archived = chat?.archived ?? false;
+  const pinned = chat?.pinned ?? false;
+  const { data: chats } = useGetChatsQuery(accountId);
+  const pinnedCount = chats?.filter((c) => c.pinned).length ?? 0;
+  const pinFull = !pinned && pinnedCount >= MAX_PINNED;
 
   return (
     <header className="chathdr">
@@ -67,6 +76,17 @@ export default function ChatHeader({ chat, jid, accountId }: Props) {
         </div>
       </button>
       <div className="chathdr__actions">
+        {onSearch && (
+          <button
+            type="button"
+            className="iconbtn"
+            title="Rechercher dans la discussion"
+            aria-label="Rechercher dans la discussion"
+            onClick={onSearch}
+          >
+            🔍
+          </button>
+        )}
         <button
           className="iconbtn"
           title="Infos du contact"
@@ -75,6 +95,21 @@ export default function ChatHeader({ chat, jid, accountId }: Props) {
           onClick={() => dispatch(toggleInfoPanel())}
         >
           ℹ️
+        </button>
+        <button
+          className={'iconbtn' + (pinned ? ' iconbtn--on' : '')}
+          title={
+            pinned
+              ? 'Désépingler'
+              : pinFull
+                ? `Déjà ${MAX_PINNED} discussions épinglées`
+                : 'Épingler en haut de la liste'
+          }
+          aria-pressed={pinned}
+          disabled={!chat || pinFull}
+          onClick={() => pinChat(accountId, jid, !pinned)}
+        >
+          📌
         </button>
         <button
           className="iconbtn"
