@@ -1,7 +1,8 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { WaMessageStatus, WaMessageType } from '@app/shared-types';
 import type { WaAccount, WaMessage } from '@app/shared-types';
-import { useAppDispatch } from '../../app/hooks';
+import { useAppDispatch, useAppSelector } from '../../app/hooks';
+import { selectComposerAction, setComposerAction } from '../ui/uiSlice';
 import { sendText, setTyping } from '../../services/socket';
 import { http } from '../../services/http';
 import { upsertMessage } from './messagesApi';
@@ -52,6 +53,23 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
+
+  // Réponse en cours (citation) pour CETTE discussion uniquement.
+  const action = useAppSelector(selectComposerAction);
+  const replyTo =
+    action?.kind === 'reply' && action.chatJid === chatJid
+      ? action.message
+      : null;
+  const cancelAction = () => dispatch(setComposerAction(null));
+
+  // Répondre : le curseur va dans la saisie ; en vue fusionnée, la réponse
+  // part du compte qui a reçu le message cité (sinon citation introuvable).
+  useEffect(() => {
+    if (!replyTo) return;
+    if (merged && replyTo.accountId !== sender) setSender(replyTo.accountId);
+    inputRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replyTo]);
 
   // Insère l'emoji à la position du curseur (ou remplace la sélection). Ne
   // fait qu'éditer le champ : l'envoi reste sur Entrée / bouton ➤.
@@ -135,6 +153,7 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
 
     stopTyping();
     const clientId = crypto.randomUUID();
+    const quotedId = replyTo?.id ?? null;
     const optimistic: WaMessage = {
       // L'écho optimistic appartient au compte émetteur choisi.
       accountId: sender,
@@ -147,13 +166,14 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
       text: value,
       timestamp: Date.now(),
       status: WaMessageStatus.PENDING,
-      quotedId: null,
+      quotedId,
       media: null,
       reactions: [],
       clientId,
     };
 
     setText('');
+    if (quotedId) cancelAction();
     setSending(true);
     mirror(optimistic);
 
@@ -163,6 +183,7 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
         chatJid,
         text: value,
         clientId,
+        ...(quotedId ? { quotedId } : {}),
       });
       if (ack.ok && ack.message) {
         mirror(ack.message);
@@ -215,7 +236,34 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
     }
   };
 
+  const replyLabel = replyTo
+    ? replyTo.fromMe
+      ? 'Vous'
+      : (replyTo.senderName ?? 'Contact')
+    : '';
+  const replyText = replyTo
+    ? (replyTo.text ?? (replyTo.media ? 'Média' : 'Message'))
+    : '';
+
   return (
+    <div className="composer-wrap">
+      {replyTo && (
+        <div className="composer__reply" role="status">
+          <div className="composer__reply-body">
+            <span className="composer__reply-who">Réponse à {replyLabel}</span>
+            <span className="composer__reply-text">{replyText}</span>
+          </div>
+          <button
+            type="button"
+            className="iconbtn composer__reply-cancel"
+            title="Annuler la réponse"
+            aria-label="Annuler la réponse"
+            onClick={cancelAction}
+          >
+            ✕
+          </button>
+        </div>
+      )}
     <form className="composer" onSubmit={onSubmit}>
       {/* Sélecteur de compte émetteur (vue fusionnée, > 1 compte). */}
       {accountOptions && accountOptions.length > 1 && (
@@ -281,6 +329,10 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
         value={text}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
+          if (e.key === 'Escape' && replyTo) {
+            cancelAction();
+            return;
+          }
           // Entrée envoie, Maj+Entrée va à la ligne (comme WhatsApp Web).
           // Ignoré pendant une composition IME et sur répétition de touche
           // (Entrée maintenue) : une frappe = au plus un envoi.
@@ -307,5 +359,6 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
         ➤
       </button>
     </form>
+    </div>
   );
 }

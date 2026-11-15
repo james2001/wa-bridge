@@ -1849,3 +1849,44 @@ a.gallery__file:hover {
     left: -8px;
   }
 }
+
+/* ---------- Réponse (citation) dans la saisie ---------- */
+.composer-wrap {
+  background: var(--header);
+}
+.composer__reply {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 16px 0;
+  padding: 6px 6px 6px 10px;
+  border-left: 4px solid var(--green);
+  border-radius: 6px;
+  background: var(--tint-strong);
+}
+.composer__reply-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.composer__reply-who {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green-dark);
+}
+.composer__reply-text {
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer__reply-cancel {
+  width: 32px;
+  height: 32px;
+  font-size: 15px;
+}
+.composer-wrap .composer {
+  border-top: none;
+}

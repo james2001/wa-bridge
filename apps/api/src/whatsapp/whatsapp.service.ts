@@ -30,6 +30,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   proto,
   type ConnectionState as BaileysConnectionState,
+  type WAMessage,
   type WASocket,
 } from 'baileys';
 import { Boom } from '@hapi/boom';
@@ -1742,6 +1743,7 @@ export class WhatsappService
     chatJid: string,
     text: string,
     clientId: string,
+    quotedId?: string,
   ): Promise<WaMessage> {
     const s = this.ensureSession(accountId);
     if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
@@ -1749,7 +1751,16 @@ export class WhatsappService
     }
     // Le numéro @s.whatsapp.net est toujours une cible d'envoi valide.
     const target = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
-    const sent = await s.sock.sendMessage(target, { text });
+    // Réponse : le message cité doit exister dans CETTE discussion, sinon on
+    // refuse (jamais d'envoi « au hasard » sans la citation demandée).
+    const quoted = quotedId
+      ? await this.quotedFor(accountId, target, quotedId)
+      : undefined;
+    const sent = await s.sock.sendMessage(
+      target,
+      { text },
+      quoted ? { quoted } : undefined,
+    );
     const msg = sent ? mapWaMessage(sent, s.sock.user?.id, accountId) : null;
     if (!msg) throw new Error("Échec de l'envoi");
     msg.chatJid = this.canonicalJid(accountId, msg.chatJid) ?? msg.chatJid;
@@ -1764,6 +1775,56 @@ export class WhatsappService
     this.emit('message', accountId, msg);
     if (chat) this.emit('chat-upsert', accountId, chat);
     return msg;
+  }
+
+  // Reconstruit le message cité au format Baileys (clé + contenu) à partir de
+  // la base.
+  private async quotedFor(
+    accountId: string,
+    chatJid: string,
+    id: string,
+  ): Promise<WAMessage> {
+    const row = await this.prisma.waMessage
+      .findUnique({
+        where: { accountId_chatJid_id: { accountId, chatJid, id } },
+        select: {
+          id: true,
+          fromMe: true,
+          senderJid: true,
+          text: true,
+          type: true,
+        },
+      })
+      .catch(() => null);
+    if (!row) throw new Error('Message cité introuvable');
+    // Contenu minimal, sans octets de média : le message brut stocké en JSON
+    // ne se ré-encode pas fiablement en protobuf. WhatsApp affiche la citation
+    // à partir du type + texte/légende.
+    const caption = row.text ?? undefined;
+    const content: proto.IMessage =
+      row.type === WaMessageType.IMAGE
+        ? { imageMessage: { caption } }
+        : row.type === WaMessageType.VIDEO
+          ? { videoMessage: { caption } }
+          : row.type === WaMessageType.AUDIO
+            ? { audioMessage: {} }
+            : row.type === WaMessageType.DOCUMENT
+              ? { documentMessage: { caption } }
+              : row.type === WaMessageType.STICKER
+                ? { stickerMessage: {} }
+                : { conversation: row.text ?? '' };
+    const isGroup = isJidGroup(chatJid) ?? false;
+    return {
+      key: {
+        remoteJid: chatJid,
+        id: row.id,
+        fromMe: row.fromMe,
+        ...(isGroup && !row.fromMe && row.senderJid
+          ? { participant: row.senderJid }
+          : {}),
+      },
+      message: content,
+    };
   }
 
   // Réagit (emoji) à un message, ou retire sa réaction (emoji = ''). Envoyé

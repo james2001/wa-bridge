@@ -166,6 +166,7 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
       chatJid: string;
       text: string;
       clientId: string;
+      quotedId?: string;
     },
   ): Promise<{ ok: boolean; message?: WaMessage; error?: string }> {
     const accountId = input.accountId ?? 'default';
@@ -175,6 +176,7 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
         input.chatJid,
         input.text,
         input.clientId,
+        input.quotedId || undefined,
       );
       return { ok: true, message };
     } catch (e) {

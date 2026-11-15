@@ -5,6 +5,8 @@ import { formatTime } from '../../lib/format';
 import MediaContent from './MediaContent';
 import MessageInfoModal from './MessageInfoModal';
 import { reactToMessage } from '../../services/socket';
+import { useAppDispatch } from '../../app/hooks';
+import { setComposerAction } from '../ui/uiSlice';
 
 // Chargé à la demande : la bibliothèque d'emojis pèse plusieurs centaines de Ko.
 const EmojiPanel = lazy(() => import('../../components/EmojiPanel'));
@@ -149,6 +151,7 @@ export default function MessageBubble({
   accountLabel,
   accountColor,
 }: Props) {
+  const dispatch = useAppDispatch();
   const isOwn = message.fromMe;
   // Panneau « Infos du message » (accusés de réception), messages sortants.
   const [infoOpen, setInfoOpen] = useState(false);
@@ -211,6 +214,23 @@ export default function MessageBubble({
             }}
           >
             ☺
+          </button>
+          <button
+            type="button"
+            className="react-trigger"
+            title="Répondre"
+            aria-label="Répondre à ce message"
+            onClick={() =>
+              dispatch(
+                setComposerAction({
+                  kind: 'reply',
+                  chatJid: message.chatJid,
+                  message,
+                }),
+              )
+            }
+          >
+            ↩
           </button>
           {pickerOpen && (
             <Suspense fallback={null}>

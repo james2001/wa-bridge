@@ -1,6 +1,7 @@
 import { createSlice } from '@reduxjs/toolkit';
 import type { PayloadAction } from '@reduxjs/toolkit';
 import { DEFAULT_ACCOUNT_ID } from '@app/shared-types';
+import type { WaMessage } from '@app/shared-types';
 import type { RootState } from '../../app/store';
 import { logout } from '../auth/authSlice';
 
@@ -8,6 +9,14 @@ import { logout } from '../auth/authSlice';
 // - 'account' : discussions du compte actif (mono-compte, comportement historique)
 // - 'merged'  : boîte de réception fusionnée, une entrée par personne (multi-compte)
 export type ViewMode = 'account' | 'merged';
+
+// Action en cours dans la zone de saisie : répondre à un message (citation)
+// ou modifier un message envoyé. Rattachée à une discussion précise.
+export interface ComposerAction {
+  kind: 'reply' | 'edit';
+  chatJid: string;
+  message: WaMessage;
+}
 
 // État d'UI local: la discussion sélectionnée. On garde le JID en mémoire
 // plutôt que dans l'URL car les JIDs contiennent '@' (routing fragile).
@@ -21,6 +30,7 @@ interface UiState {
   viewMode: ViewMode;
   // Personne sélectionnée en mode 'merged' (JID pn transverse aux comptes).
   selectedPersonId: string | null;
+  composerAction: ComposerAction | null;
 }
 
 const initialState: UiState = {
@@ -29,6 +39,7 @@ const initialState: UiState = {
   activeAccountId: DEFAULT_ACCOUNT_ID,
   viewMode: 'account',
   selectedPersonId: null,
+  composerAction: null,
 };
 
 const uiSlice = createSlice({
@@ -39,6 +50,7 @@ const uiSlice = createSlice({
       state.selectedChatJid = action.payload;
       // On referme le panneau d'infos en changeant de discussion.
       state.infoPanelOpen = false;
+      state.composerAction = null;
     },
     // Change de compte affiché: on repart d'une conversation vide (les JIDs
     // d'un compte n'ont pas de sens dans un autre).
@@ -46,6 +58,7 @@ const uiSlice = createSlice({
       if (state.activeAccountId === action.payload) return;
       state.activeAccountId = action.payload;
       state.selectedChatJid = null;
+      state.composerAction = null;
       state.infoPanelOpen = false;
     },
     // Bascule Comptes <-> Fusionné. On repart d'une sélection vide (les JIDs
@@ -54,6 +67,7 @@ const uiSlice = createSlice({
       if (state.viewMode === action.payload) return;
       state.viewMode = action.payload;
       state.selectedChatJid = null;
+      state.composerAction = null;
       state.selectedPersonId = null;
       state.infoPanelOpen = false;
     },
@@ -61,6 +75,10 @@ const uiSlice = createSlice({
     selectPerson(state, action: PayloadAction<string | null>) {
       state.selectedPersonId = action.payload;
       state.infoPanelOpen = false;
+      state.composerAction = null;
+    },
+    setComposerAction(state, action: PayloadAction<ComposerAction | null>) {
+      state.composerAction = action.payload;
     },
     openInfoPanel(state) {
       state.infoPanelOpen = true;
@@ -86,6 +104,7 @@ export const {
   openInfoPanel,
   closeInfoPanel,
   toggleInfoPanel,
+  setComposerAction,
 } = uiSlice.actions;
 
 export default uiSlice.reducer;
@@ -100,3 +119,5 @@ export const selectViewMode = (state: RootState): ViewMode =>
   state.ui.viewMode;
 export const selectSelectedPersonId = (state: RootState): string | null =>
   state.ui.selectedPersonId;
+export const selectComposerAction = (state: RootState): ComposerAction | null =>
+  state.ui.composerAction;
