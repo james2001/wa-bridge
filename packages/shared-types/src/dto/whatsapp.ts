@@ -57,6 +57,20 @@ export interface WaContactsResponse {
   contacts: WaContactEntry[];
 }
 
+// Infos d'un groupe (GET /api/wa/groups/:jid).
+export interface WaGroupParticipant {
+  jid: string; // JID tel que WhatsApp l'adresse (pn ou lid)
+  name: string | null;
+  admin: 'admin' | 'superadmin' | null;
+  isMe: boolean;
+}
+export interface WaGroupInfo {
+  jid: string;
+  subject: string | null;
+  description: string | null;
+  participants: WaGroupParticipant[];
+}
+
 // Une discussion dans la liste.
 export interface WaChat {
   accountId: string; // compte propriétaire

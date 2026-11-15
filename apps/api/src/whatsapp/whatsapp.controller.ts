@@ -20,6 +20,7 @@ import type {
   WaConnection,
   WaContactAbout,
   WaContactsResponse,
+  WaGroupInfo,
   WaCommunitiesResponse,
   WaMessage,
   WaMessageInfoResponse,
@@ -52,6 +53,19 @@ export class WhatsappController {
     @Query('accountId') accountId = 'default',
   ): Promise<WaChatsResponse> {
     return { chats: await this.wa.listChats(accountId) };
+  }
+
+  // Infos d'un groupe (participants, admins, description).
+  @Get('groups/:jid')
+  async group(
+    @Param('jid') jid: string,
+    @Query('accountId') accountId = 'default',
+  ): Promise<WaGroupInfo> {
+    try {
+      return await this.wa.getGroupInfo(accountId, jid);
+    } catch (e) {
+      throw new BadRequestException(e instanceof Error ? e.message : 'group_failed');
+    }
   }
 
   // Messages importants (étoile) du compte.

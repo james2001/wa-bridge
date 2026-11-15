@@ -45,6 +45,7 @@ import {
   type WaChat,
   type WaCommunitiesResponse,
   type WaContactEntry,
+  type WaGroupInfo,
   type WaCommunity,
   type WaConnection,
   type WaContactAbout,
@@ -2267,6 +2268,68 @@ export class WhatsappService
           },
         ]
       : [];
+  }
+
+  // Infos d'un groupe : sujet, description, participants (admins d'abord,
+  // puis par nom). Lecture seule.
+  async getGroupInfo(accountId = DEFAULT_ACCOUNT_ID, jid: string): Promise<WaGroupInfo> {
+    const s = this.ensureSession(accountId);
+    if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
+      throw new Error('WhatsApp non connecté');
+    }
+    if (!isJidGroup(jid)) throw new Error("Ce n'est pas un groupe");
+    const meta = await this.withTimeout(
+      s.sock.groupMetadata(jid),
+      WhatsappService.REACTION_TIMEOUT_MS,
+    );
+    const me = s.sock.user?.id ? jidNormalizedUser(s.sock.user.id) : null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const myLid = (s.sock.user as any)?.lid
+      ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        jidNormalizedUser((s.sock.user as any).lid)
+      : null;
+    const participants = [];
+    for (const p of meta.participants ?? []) {
+      const id = jidNormalizedUser(p.id);
+      const canon = this.canonicalJid(accountId, id) ?? id;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pn = (p as any).phoneNumber ? jidNormalizedUser((p as any).phoneNumber) : null;
+      const name =
+        (await this.nameFor(accountId, canon)) ??
+        (pn ? await this.nameFor(accountId, pn) : null) ??
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        cleanName((p as any).notify ?? (p as any).name ?? null);
+      participants.push({
+        jid: id,
+        name,
+        admin: (p.admin as 'admin' | 'superadmin' | null | undefined) ?? null,
+        isMe: id === me || id === myLid || canon === me || pn === me,
+      });
+    }
+    participants.sort(
+      (a, b) =>
+        Number(b.isMe) - Number(a.isMe) ||
+        Number(Boolean(b.admin)) - Number(Boolean(a.admin)) ||
+        (a.name ?? '~').localeCompare(b.name ?? '~', 'fr', { sensitivity: 'base' }),
+    );
+    return {
+      jid,
+      subject: cleanName(meta.subject ?? null),
+      description: meta.desc ? String(meta.desc) : null,
+      participants,
+    };
+  }
+
+  // Quitte un groupe. Action visible des membres : déclenchée uniquement par
+  // la fenêtre de confirmation du front.
+  async leaveGroup(accountId = DEFAULT_ACCOUNT_ID, jid: string): Promise<void> {
+    const s = this.ensureSession(accountId);
+    if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
+      throw new Error('WhatsApp non connecté');
+    }
+    if (!isJidGroup(jid)) throw new Error("Ce n'est pas un groupe");
+    await this.withTimeout(s.sock.groupLeave(jid), WhatsappService.REACTION_TIMEOUT_MS);
+    this.logger.log(`[${accountId}] groupe quitté ${jid}`);
   }
 
   // Marque une discussion « non lue » (pastille sans nombre, comme WhatsApp).

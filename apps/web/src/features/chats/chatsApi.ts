@@ -8,6 +8,7 @@ import type {
   WaMediaItem,
   WaContactAbout,
   WaContactEntry,
+  WaGroupInfo,
   WaMessage,
   WaContactsResponse,
 } from '@app/shared-types';
@@ -56,6 +57,14 @@ export const chatsApi = api.injectEndpoints({
         { type: 'WaCommunities' as const, id: accountId },
       ],
     }),
+    // Infos d'un groupe (participants, admins, description).
+    getGroupInfo: builder.query<WaGroupInfo, AccountJidArg>({
+      query: ({ accountId, jid }) => ({
+        url: `/wa/groups/${encodeURIComponent(jid)}`,
+        params: { accountId },
+      }),
+      keepUnusedDataFor: 60,
+    }),
     // Messages importants (étoile) du compte.
     getStarred: builder.query<WaMessage[], string>({
       query: (accountId) => ({ url: '/wa/starred', params: { accountId } }),
@@ -89,6 +98,7 @@ export const {
   useGetContactsQuery,
   useSearchMessagesQuery,
   useGetStarredQuery,
+  useGetGroupInfoQuery,
   useGetChatsQuery,
   useGetChatMediaQuery,
   useGetContactAboutQuery,

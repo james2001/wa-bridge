@@ -306,6 +306,19 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
     );
   }
 
+  @SubscribeMessage('wa:group-leave')
+  async onGroupLeave(
+    @MessageBody() input: { accountId?: string; chatJid: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.logger.log(`wa:group-leave ${input.chatJid}`);
+    try {
+      await this.wa.leaveGroup(input.accountId ?? 'default', input.chatJid);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'leave_failed' };
+    }
+  }
+
   @SubscribeMessage('wa:mark-unread')
   async onMarkUnread(
     @MessageBody() input: { accountId?: string; chatJid: string },

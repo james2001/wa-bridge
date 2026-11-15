@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import Avatar from '../../components/Avatar';
 import MediaGallery from './MediaGallery';
+import GroupInfoSection from './GroupInfoSection';
 import {
   useGetChatsQuery,
   useGetChatMediaQuery,
@@ -102,6 +103,10 @@ export default function ContactInfoPanel({ jid }: Props) {
               </span>
             )}
           </section>
+        )}
+
+        {isGroup && (
+          <GroupInfoSection accountId={accountId} jid={jid} title={title} />
         )}
 
         <section className="infopanel__media">

@@ -192,6 +192,28 @@ export function starMessage(
   socket?.emit('wa:star', { accountId, chatJid, messageId, starred });
 }
 
+// Quitte un groupe. Refuse si le socket est coupé.
+export function leaveGroup(
+  accountId: string,
+  chatJid: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    const s = socket;
+    if (!s || !s.connected) {
+      reject(new Error('Socket non connecté'));
+      return;
+    }
+    s.timeout(20_000).emit(
+      'wa:group-leave',
+      { accountId, chatJid },
+      (err: Error | null, ack: { ok: boolean; error?: string }) => {
+        if (err) reject(err);
+        else resolve(ack);
+      },
+    );
+  });
+}
+
 // Marque une discussion comme non lue.
 export function markUnread(accountId: string, chatJid: string): void {
   socket?.emit('wa:mark-unread', { accountId, chatJid });

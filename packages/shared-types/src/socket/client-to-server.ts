@@ -105,6 +105,12 @@ export interface ClientToServerEvents {
     ack: (res: { ok: boolean; error?: string }) => void,
   ) => void;
 
+  // Quitte un groupe (les membres voient « X est parti »).
+  'wa:group-leave': (
+    input: { accountId?: string; chatJid: string },
+    ack: (res: { ok: boolean; error?: string }) => void,
+  ) => void;
+
   // Bloque / débloque un contact (1:1).
   'wa:block': (input: { accountId?: string; chatJid: string; blocked: boolean }) => void;
 }
