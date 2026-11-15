@@ -2356,7 +2356,10 @@ export class WhatsappService
   async listChats(accountId = DEFAULT_ACCOUNT_ID): Promise<WaChat[]> {
     const rows = await this.prisma.waChat.findMany({
       where: { accountId },
-      orderBy: [{ lastMessageAt: 'desc' }],
+      // NULLS LAST : par défaut Postgres trie les NULL en tête d'un DESC. Les
+      // centaines de discussions sans date (contacts croisés en groupe, jamais
+      // écrits) remplissaient alors les 500 places et chassaient les vraies.
+      orderBy: [{ lastMessageAt: { sort: 'desc', nulls: 'last' } }],
       take: 500,
     });
     // Les conteneurs de communauté (parents) ne sont pas des discussions : on
@@ -2371,6 +2374,7 @@ export class WhatsappService
     return rows
       .filter((r) => !this.isIgnoredChat(r.jid))
       .filter((r) => !this.isPlaceholderChat(r))
+      .filter((r) => !this.isEmptyDirectChat(r))
       .filter((r) => !communityJids.has(r.jid))
       .map((r) => this.chatRowToDto(accountId, r));
   }
@@ -2399,6 +2403,19 @@ export class WhatsappService
     lastMessagePreview: string | null;
   }): boolean {
     return !cleanName(r.name) && !cleanName(r.lastMessagePreview);
+  }
+
+  // Discussion 1:1 sans aucun échange : ni date ni aperçu. La synchro
+  // d'historique en crée une pour chaque personne croisée dans un groupe ; ce
+  // n'est pas une conversation, WhatsApp ne l'affiche pas non plus.
+  private isEmptyDirectChat(r: {
+    isGroup: boolean;
+    lastMessageAt: Date | null;
+    lastMessagePreview: string | null;
+  }): boolean {
+    return (
+      !r.isGroup && r.lastMessageAt === null && !cleanName(r.lastMessagePreview)
+    );
   }
 
   async listMessages(
@@ -2602,6 +2619,7 @@ export class WhatsappService
     for (const r of rows) {
       if (this.isIgnoredChat(r.jid)) continue;
       if (this.isPlaceholderChat(r)) continue;
+      if (this.isEmptyDirectChat(r)) continue;
       // Canonicalise (@lid -> pn via le cache mémoire du compte, comme
       // chatRowToDto) pour regrouper le même numéro à travers les comptes.
       const jid = this.canonicalJid(r.accountId, r.jid) ?? r.jid;
