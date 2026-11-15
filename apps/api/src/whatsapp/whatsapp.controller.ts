@@ -54,6 +54,14 @@ export class WhatsappController {
     return { chats: await this.wa.listChats(accountId) };
   }
 
+  // Messages importants (étoile) du compte.
+  @Get('starred')
+  async starred(
+    @Query('accountId') accountId = 'default',
+  ): Promise<{ messages: WaMessage[] }> {
+    return { messages: await this.wa.listStarred(accountId) };
+  }
+
   // Recherche dans les messages (tout le compte, ou une discussion).
   @Get('search')
   async search(

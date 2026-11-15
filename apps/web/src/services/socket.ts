@@ -182,6 +182,16 @@ export function archiveChat(
   socket?.emit('wa:archive', { accountId, chatJid, archived });
 }
 
+// Marque / retire un message des « importants » (étoile).
+export function starMessage(
+  accountId: string,
+  chatJid: string,
+  messageId: string,
+  starred: boolean,
+): void {
+  socket?.emit('wa:star', { accountId, chatJid, messageId, starred });
+}
+
 // Marque une discussion comme non lue.
 export function markUnread(accountId: string, chatJid: string): void {
   socket?.emit('wa:mark-unread', { accountId, chatJid });

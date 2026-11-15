@@ -13,7 +13,7 @@ interface Props {
 
 // Extrait centré sur la première occurrence, occurrence surlignée.
 function Snippet({ text, query }: { text: string; query: string }) {
-  const i = text.toLowerCase().indexOf(query.toLowerCase());
+  const i = query ? text.toLowerCase().indexOf(query.toLowerCase()) : -1;
   if (i < 0) return <>{text.slice(0, 120)}</>;
   const start = Math.max(0, i - 40);
   return (
@@ -30,7 +30,7 @@ export default function SearchResults({ messages, isFetching, query, chats, onPi
   const byJid = new Map((chats ?? []).map((c) => [c.jid, c]));
   if (isFetching && !messages) return <p className="search__empty">Recherche…</p>;
   if (!messages || messages.length === 0) {
-    return <p className="search__empty">Aucun message trouvé.</p>;
+    return <p className="search__empty">Aucun message.</p>;
   }
   return (
     <ul className="search__list">

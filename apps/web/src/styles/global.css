@@ -2217,3 +2217,9 @@ a.gallery__file:hover {
   font-size: 13px;
   text-align: left;
 }
+
+.bubble__star {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-right: 4px;
+}

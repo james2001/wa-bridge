@@ -56,6 +56,13 @@ export const chatsApi = api.injectEndpoints({
         { type: 'WaCommunities' as const, id: accountId },
       ],
     }),
+    // Messages importants (étoile) du compte.
+    getStarred: builder.query<WaMessage[], string>({
+      query: (accountId) => ({ url: '/wa/starred', params: { accountId } }),
+      transformResponse: (response: { messages: WaMessage[] }) =>
+        response.messages,
+      keepUnusedDataFor: 0,
+    }),
     // Recherche dans les messages (compte entier ou une discussion).
     searchMessages: builder.query<
       WaMessage[],
@@ -81,6 +88,7 @@ export const chatsApi = api.injectEndpoints({
 export const {
   useGetContactsQuery,
   useSearchMessagesQuery,
+  useGetStarredQuery,
   useGetChatsQuery,
   useGetChatMediaQuery,
   useGetContactAboutQuery,

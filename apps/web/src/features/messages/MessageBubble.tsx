@@ -6,7 +6,7 @@ import { formatWhatsappText } from '../../lib/formatText';
 import MediaContent from './MediaContent';
 import MessageInfoModal from './MessageInfoModal';
 import DeleteMessageModal from './DeleteMessageModal';
-import { reactToMessage } from '../../services/socket';
+import { reactToMessage, starMessage } from '../../services/socket';
 import { useAppDispatch } from '../../app/hooks';
 import { setComposerAction } from '../ui/uiSlice';
 
@@ -281,6 +281,27 @@ export default function MessageBubble({
               ✎
             </button>
           )}
+          {canReact && (
+            <button
+              type="button"
+              className="react-trigger"
+              title={message.starred ? 'Retirer des importants' : 'Marquer comme important'}
+              aria-label={
+                message.starred ? 'Retirer des importants' : 'Marquer comme important'
+              }
+              aria-pressed={Boolean(message.starred)}
+              onClick={() =>
+                starMessage(
+                  message.accountId,
+                  message.chatJid,
+                  message.id,
+                  !message.starred,
+                )
+              }
+            >
+              {message.starred ? '★' : '☆'}
+            </button>
+          )}
           <button
             type="button"
             className="react-trigger"
@@ -345,6 +366,11 @@ export default function MessageBubble({
           </span>
         )}
         <span className="bubble__meta">
+          {message.starred && (
+            <span className="bubble__star" title="Message important">
+              ★
+            </span>
+          )}
           {message.edited && <span className="bubble__edited">modifié</span>}
           <span className="bubble__time">{formatTime(message.timestamp)}</span>
           {isOwn && (

@@ -79,6 +79,14 @@ export interface ClientToServerEvents {
     ack: (res: { ok: boolean; error?: string }) => void,
   ) => void;
 
+  // Marque / retire un message des « importants » (étoile).
+  'wa:star': (input: {
+    accountId?: string;
+    chatJid: string;
+    messageId: string;
+    starred: boolean;
+  }) => void;
+
   // Réagit à un message avec un emoji ('' = retire sa réaction).
   'wa:react': (
     input: { accountId?: string; chatJid: string; messageId: string; emoji: string },

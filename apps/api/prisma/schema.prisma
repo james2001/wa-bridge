@@ -95,6 +95,8 @@ model WaMessage {
   clientId   String?  @map("client_id")
   // Horodatage de la dernière édition (null si jamais édité).
   editedAt   DateTime? @map("edited_at")
+  // Message important (étoile), synchronisé avec WhatsApp.
+  starred    Boolean  @default(false)
   // Message brut Baileys (proto IMessage) — conservé pour (re)télécharger le média.
   rawMessage Json?    @map("raw_message")
   // SHA-256 (base64) du fichier média — sert à dédupliquer la double livraison LID.
@@ -107,6 +109,7 @@ model WaMessage {
   // Vue fusionnée par personne (Phase 3) : timeline cross-compte triée par date
   // (WHERE chat_jid = pn ORDER BY sent_at), sans filtre account_id en tête.
   @@index([chatJid, sentAt])
+  @@index([accountId, starred, sentAt])
   @@map("wa_messages")
 }
 

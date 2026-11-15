@@ -293,6 +293,19 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
     await this.wa.setPinned(input.accountId ?? 'default', input.chatJid, input.pinned);
   }
 
+  @SubscribeMessage('wa:star')
+  async onStar(
+    @MessageBody()
+    input: { accountId?: string; chatJid: string; messageId: string; starred: boolean },
+  ): Promise<void> {
+    await this.wa.setStarred(
+      input.accountId ?? 'default',
+      input.chatJid,
+      input.messageId,
+      Boolean(input.starred),
+    );
+  }
+
   @SubscribeMessage('wa:mark-unread')
   async onMarkUnread(
     @MessageBody() input: { accountId?: string; chatJid: string },

@@ -168,7 +168,7 @@ export class WhatsappService
   // Limite WhatsApp du nombre de discussions épinglées.
   static readonly MAX_PINNED = 3;
   // Marqueur (dans le dossier auth du compte) : relecture app-state déjà faite.
-  private static readonly CHAT_STATE_RESYNC_MARK = '.wa-bridge-chat-state-resync-v1';
+  private static readonly CHAT_STATE_RESYNC_MARK = '.wa-bridge-chat-state-resync-v2';
   private static readonly CHAT_STATE_RESYNC_TIMEOUT_MS = 60_000;
   private static readonly REACTION_TIMEOUT_MS = 15_000;
   // Fenêtre de modification d'un message (règle WhatsApp).
@@ -1061,6 +1061,17 @@ export class WhatsappService
       const rawJid: string | undefined = key?.remoteJid ?? undefined;
       const id: string | undefined = key?.id ?? undefined;
       if (!rawJid || !id) continue;
+      // Étoile posée / retirée depuis un autre appareil (starAction).
+      if (typeof update?.starred === 'boolean') {
+        const jid = (await this.resolvePn(accountId, rawJid)) ?? rawJid;
+        const row = await this.prisma.waMessage
+          .update({
+            where: { accountId_chatJid_id: { accountId, chatJid: jid, id } },
+            data: { starred: update.starred },
+          })
+          .catch(() => null);
+        if (row) this.emit('message', accountId, this.msgRowToDto(accountId, row));
+      }
       if (update.status === undefined || update.status === null) continue;
       // Le message est stocké sous le JID canonique (téléphone) ; l'accusé peut
       // arriver sous le JID @lid -> on canonicalise pour retrouver le message.
@@ -1967,6 +1978,43 @@ export class WhatsappService
     );
   }
 
+  // Message important (étoile) : local d'abord, puis synchro de ses appareils
+  // (best-effort). Rien n'est envoyé au contact.
+  async setStarred(
+    accountId = DEFAULT_ACCOUNT_ID,
+    chatJid: string,
+    messageId: string,
+    starred: boolean,
+  ): Promise<void> {
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    const row = await this.prisma.waMessage
+      .update({
+        where: { accountId_chatJid_id: { accountId, chatJid: jid, id: messageId } },
+        data: { starred },
+      })
+      .catch(() => null);
+    if (!row) return;
+    this.emit('message', accountId, this.msgRowToDto(accountId, row));
+    void this.syncChatModify(
+      accountId,
+      jid,
+      { star: { messages: [{ id: row.id, fromMe: row.fromMe }], star: starred } },
+      'star',
+    );
+  }
+
+  // Messages importants du compte, récents d'abord (bornés).
+  async listStarred(accountId = DEFAULT_ACCOUNT_ID): Promise<WaMessage[]> {
+    const rows = await this.prisma.waMessage
+      .findMany({
+        where: { accountId, starred: true },
+        orderBy: { sentAt: 'desc' },
+        take: 200,
+      })
+      .catch(() => []);
+    return rows.map((r) => this.msgRowToDto(accountId, r));
+  }
+
   // Réagit (emoji) à un message, ou retire sa réaction (emoji = ''). Envoyé
   // UNIQUEMENT sur clic explicite de l'utilisateur (socket 'wa:react').
   async sendReaction(
@@ -2281,7 +2329,8 @@ export class WhatsappService
   }
 
   // Relecture complète, UNE FOIS par compte, de la collection app-state
-  // « regular_low » (épinglage, archivage, lu/non lu). Les épinglages faits
+  // « regular_low » (épinglage, étoiles, archivage, lu/non lu). v2 : relance
+  // pour importer aussi les messages importants. Les épinglages faits
   // sur le téléphone avant que le pont ne sache les lire n'arrivent sinon
   // jamais : Baileys ne rejoue que les changements postérieurs à la version
   // déjà connue. On efface cette version pour forcer un instantané complet ;
@@ -3880,6 +3929,7 @@ export class WhatsappService
       reactions: unknown;
       clientId: string | null;
       editedAt?: Date | null;
+      starred?: boolean;
     },
   ): WaMessage {
     const dto: WaMessage = {
@@ -3898,6 +3948,7 @@ export class WhatsappService
       reactions: (row.reactions as WaReaction[] | null) ?? [],
       clientId: row.clientId,
       ...(row.editedAt ? { edited: true } : {}),
+      ...(row.starred ? { starred: true } : {}),
     };
     // URL backend du média (servie déchiffrée à la demande).
     this.attachMediaUrl(dto);

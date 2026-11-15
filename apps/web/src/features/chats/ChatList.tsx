@@ -25,6 +25,7 @@ import ThemeToggle from '../ui/ThemeToggle';
 import NewChatModal from './NewChatModal';
 import ChatItemMenu from './ChatItemMenu';
 import SearchResults from '../search/SearchResults';
+import StarredModal from '../search/StarredModal';
 import { useDebounced } from '../../hooks/useDebounced';
 import { useSearchMessagesQuery } from './chatsApi';
 import { setFocusMessage } from '../ui/uiSlice';
@@ -66,6 +67,7 @@ export default function ChatList() {
   const [filter, setFilter] = useState<ChatFilter>('all');
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [showNewChat, setShowNewChat] = useState(false);
+  const [showStarred, setShowStarred] = useState(false);
   const drafts = useDrafts();
   // Autorisation des notifications du navigateur (demandée sur clic).
   const [notifPerm, setNotifPerm] = useState(notificationPermission);
@@ -335,6 +337,15 @@ export default function ChatList() {
           >
             ✎
           </button>
+          <button
+            type="button"
+            className="iconbtn"
+            title="Messages importants"
+            aria-label="Messages importants"
+            onClick={() => setShowStarred(true)}
+          >
+            ★
+          </button>
           <ThemeToggle />
           <button
             className="iconbtn"
@@ -455,6 +466,12 @@ export default function ChatList() {
           )}
       </div>
 
+      {showStarred && (
+        <StarredModal
+          accountId={activeAccountId}
+          onClose={() => setShowStarred(false)}
+        />
+      )}
       {showNewChat && (
         <NewChatModal
           accountId={activeAccountId}
