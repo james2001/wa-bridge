@@ -134,8 +134,11 @@ interface AccountSession {
   avatarNoPhoto: Map<string, number>;
   avatarActive: number;
   avatarQueue: Array<() => void>;
-  localMetaGuard: Map<string, { archivedUntil: number; mutedUntil: number }>;
+  localMetaGuard: Map<string, Partial<Record<MetaField, number>>>;
 }
+
+// Champs app-state posés localement puis renvoyés en écho par WhatsApp.
+type MetaField = 'archived' | 'muted' | 'pinned';
 
 @Injectable()
 export class WhatsappService
@@ -157,6 +160,8 @@ export class WhatsappService
   private readonly removedAccounts = new Set<string>();
 
   private static readonly LOCAL_META_GUARD_MS = 20_000;
+  // Limite WhatsApp du nombre de discussions épinglées.
+  static readonly MAX_PINNED = 3;
   private static readonly AVATAR_MAX_CONCURRENT = 3;
   // 24 h: une entrée "pas de photo" mise à tort (timeout) se répare en 1 jour.
   private static readonly AVATAR_NEG_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
@@ -1211,6 +1216,7 @@ export class WhatsappService
             lastMessageAt: lastAt,
             ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
             ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
+            ...(meta.pinned !== undefined ? { pinned: meta.pinned } : {}),
           },
           update: {
             name: name ?? undefined,
@@ -1218,6 +1224,7 @@ export class WhatsappService
             lastMessageAt: lastAt ?? undefined,
             ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
             ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
+            ...(meta.pinned !== undefined ? { pinned: meta.pinned } : {}),
           },
         })
         .catch(() => undefined);
@@ -1289,7 +1296,11 @@ export class WhatsappService
   private chatMetaOf(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ch: any,
-  ): { archived: boolean | undefined; muted: boolean | undefined } {
+  ): {
+    archived: boolean | undefined;
+    muted: boolean | undefined;
+    pinned: boolean | undefined;
+  } {
     const archived =
       typeof ch?.archived === 'boolean' ? ch.archived : undefined;
     let muted: boolean | undefined;
@@ -1305,7 +1316,15 @@ export class WhatsappService
       else if (ms < EPOCH_FLOOR_MS) muted = true; // durée relative => muet
       else muted = ms > Date.now(); // timestamp absolu => muet si futur
     }
-    return { archived, muted };
+    // ch.pinned : horodatage d'épinglage (s) ; null/0 = non épinglé. Absent
+    // (undefined) = info non fournie -> on ne touche pas la colonne.
+    let pinned: boolean | undefined;
+    if (ch?.pinned !== undefined) {
+      const p = ch.pinned;
+      const n = typeof p === 'number' ? p : p == null ? 0 : Number(p);
+      pinned = !Number.isNaN(n) && n > 0;
+    }
+    return { archived, muted, pinned };
   }
 
   private async onChatsUpsert(
@@ -1328,12 +1347,14 @@ export class WhatsappService
             unreadCount: ch.unreadCount ?? 0,
             ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
             ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
+            ...(meta.pinned !== undefined ? { pinned: meta.pinned } : {}),
           },
           update: {
             name: name ?? undefined,
             unreadCount: ch.unreadCount ?? undefined,
             ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
             ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
+            ...(meta.pinned !== undefined ? { pinned: meta.pinned } : {}),
           },
         })
         .catch(() => null);
@@ -1359,7 +1380,8 @@ export class WhatsappService
         !hasUnread &&
         !ch.name &&
         meta.archived === undefined &&
-        meta.muted === undefined
+        meta.muted === undefined &&
+        meta.pinned === undefined
       ) {
         continue;
       }
@@ -1380,10 +1402,17 @@ export class WhatsappService
         meta.muted = undefined;
       }
       if (
+        meta.pinned !== undefined &&
+        this.isMetaGuarded(accountId, jid, 'pinned')
+      ) {
+        meta.pinned = undefined;
+      }
+      if (
         !hasUnread &&
         !subject &&
         meta.archived === undefined &&
-        meta.muted === undefined
+        meta.muted === undefined &&
+        meta.pinned === undefined
       ) {
         continue; // plus rien à écrire après suppression de l'écho gardé
       }
@@ -1400,12 +1429,14 @@ export class WhatsappService
             unreadCount: unread ?? 0,
             ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
             ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
+            ...(meta.pinned !== undefined ? { pinned: meta.pinned } : {}),
           },
           update: {
             ...(unread !== undefined ? { unreadCount: unread } : {}),
             ...(subject ? { name } : {}),
             ...(meta.archived !== undefined ? { archived: meta.archived } : {}),
             ...(meta.muted !== undefined ? { muted: meta.muted } : {}),
+            ...(meta.pinned !== undefined ? { pinned: meta.pinned } : {}),
           },
         })
         .catch(() => null);
@@ -1829,29 +1860,21 @@ export class WhatsappService
   private guardLocalMeta(
     accountId: string,
     jid: string,
-    field: 'archived' | 'muted',
+    field: MetaField,
   ): void {
     const s = this.ensureSession(accountId);
-    const until = Date.now() + WhatsappService.LOCAL_META_GUARD_MS;
-    const cur = s.localMetaGuard.get(jid) ?? {
-      archivedUntil: 0,
-      mutedUntil: 0,
-    };
-    if (field === 'archived') cur.archivedUntil = until;
-    else cur.mutedUntil = until;
+    const cur = s.localMetaGuard.get(jid) ?? {};
+    cur[field] = Date.now() + WhatsappService.LOCAL_META_GUARD_MS;
     s.localMetaGuard.set(jid, cur);
   }
 
   private isMetaGuarded(
     accountId: string,
     jid: string,
-    field: 'archived' | 'muted',
+    field: MetaField,
   ): boolean {
     const s = this.ensureSession(accountId);
-    const g = s.localMetaGuard.get(jid);
-    if (!g) return false;
-    const until = field === 'archived' ? g.archivedUntil : g.mutedUntil;
-    return until > Date.now();
+    return (s.localMetaGuard.get(jid)?.[field] ?? 0) > Date.now();
   }
 
   async setArchived(
@@ -1909,6 +1932,36 @@ export class WhatsappService
       { mute: muted ? 8 * 60 * 60 * 1000 : null },
       'mute',
     );
+  }
+
+  // Épingle / désépingle une discussion. Comme WhatsApp, au plus
+  // MAX_PINNED discussions épinglées par compte : au-delà, refus silencieux
+  // (le front désactive déjà le bouton). Mutation app-state de TES appareils
+  // uniquement : aucun message n'est envoyé au contact.
+  async setPinned(
+    accountId = DEFAULT_ACCOUNT_ID,
+    chatJid: string,
+    pinned: boolean,
+  ): Promise<void> {
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    if (pinned) {
+      const count = await this.prisma.waChat
+        .count({ where: { accountId, pinned: true, NOT: { jid } } })
+        .catch(() => 0);
+      if (count >= WhatsappService.MAX_PINNED) {
+        this.logger.warn(`pin refusé ${jid}: déjà ${count} épinglées`);
+        await this.emitChatRefresh(accountId, jid);
+        return;
+      }
+    }
+    this.guardLocalMeta(accountId, jid, 'pinned');
+    // 1) État local autoritaire d'abord (cf. setArchived).
+    const row = await this.prisma.waChat
+      .update({ where: { accountId_jid: { accountId, jid } }, data: { pinned } })
+      .catch(() => null);
+    if (row) this.emit('chat-upsert', accountId, this.chatRowToDto(accountId, row));
+    // 2) Synchro WhatsApp best-effort, sans bloquer.
+    void this.syncChatModify(accountId, jid, { pin: pinned }, 'pin');
   }
 
   // Pousse une mutation app-state vers WhatsApp sans jamais bloquer l'appelant.
@@ -2359,7 +2412,11 @@ export class WhatsappService
       // NULLS LAST : par défaut Postgres trie les NULL en tête d'un DESC. Les
       // centaines de discussions sans date (contacts croisés en groupe, jamais
       // écrits) remplissaient alors les 500 places et chassaient les vraies.
-      orderBy: [{ lastMessageAt: { sort: 'desc', nulls: 'last' } }],
+      // Épinglées d'abord (jamais coupées par le take), puis par date.
+      orderBy: [
+        { pinned: 'desc' },
+        { lastMessageAt: { sort: 'desc', nulls: 'last' } },
+      ],
       take: 500,
     });
     // Les conteneurs de communauté (parents) ne sont pas des discussions : on

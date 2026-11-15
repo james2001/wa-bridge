@@ -29,6 +29,15 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
   const typingRef = useRef(false);
   const typingTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Ouvrir une discussion place le curseur dans la saisie, comme WhatsApp Web.
+  // Pas sur écran tactile : le clavier virtuel masquerait la conversation.
+  useEffect(() => {
+    if (window.matchMedia?.('(pointer: fine)').matches) {
+      inputRef.current?.focus();
+    }
+  }, [chatJid]);
 
   const stopTyping = () => {
     if (typingTimeout.current) {
@@ -195,6 +204,7 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
         📎
       </button>
       <input
+        ref={inputRef}
         className="composer__input"
         type="text"
         placeholder="Écrivez un message"

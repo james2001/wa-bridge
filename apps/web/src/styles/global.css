@@ -12,6 +12,48 @@
   --border: #e9edef;
   --chat-bg: #efeae2;
   --danger: #d32f2f;
+  /* Surfaces secondaires (survol, sélection, saisie). */
+  --hover: #f5f6f6;
+  --active: #f0f2f5;
+  --chip-hover: #e5e9eb;
+  --input-bg: #ffffff;
+  --hint-bg: #f7f8fa;
+  --code-bg: #eceff1;
+  --tint: rgba(0, 0, 0, 0.04);
+  --tint-strong: rgba(0, 0, 0, 0.07);
+  color-scheme: light;
+}
+
+/* Thème sombre : posé par <html data-theme="dark"> (src/lib/theme.ts). */
+:root[data-theme='dark'] {
+  --green: #00a884;
+  --green-dark: #00a884;
+  --green-light: #103529;
+  --bg: #0c1317;
+  --panel: #111b21;
+  --header: #202c33;
+  --bubble-out: #005c4b;
+  --bubble-in: #202c33;
+  --text: #e9edef;
+  --text-muted: #8696a0;
+  --border: #222d34;
+  --chat-bg: #0b141a;
+  --danger: #f15c6d;
+  --hover: #202c33;
+  --active: #2a3942;
+  --chip-hover: #2a3942;
+  --input-bg: #2a3942;
+  --hint-bg: #202c33;
+  --code-bg: #2a3942;
+  --tint: rgba(255, 255, 255, 0.05);
+  --tint-strong: rgba(255, 255, 255, 0.1);
+  color-scheme: dark;
+}
+
+/* Champs sans style propre : texte et fond suivent le thème. */
+:where(input, select, textarea) {
+  color: var(--text);
+  background-color: var(--input-bg);
 }
 
 * {
@@ -73,7 +115,14 @@ button {
   color: var(--text-muted);
 }
 .iconbtn:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--tint-strong);
+}
+.iconbtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.iconbtn--on {
+  background: var(--tint-strong);
 }
 
 /* ---------- Avatars ---------- */
@@ -197,14 +246,14 @@ button {
 .login__hint {
   font-size: 12px;
   color: var(--text-muted);
-  background: #f7f8fa;
+  background: var(--hint-bg);
   border: 1px dashed var(--border);
   border-radius: 8px;
   padding: 10px 12px;
   margin: 4px 0 0;
 }
 .login__hint code {
-  background: #eceff1;
+  background: var(--code-bg);
   padding: 1px 4px;
   border-radius: 4px;
 }
@@ -337,7 +386,7 @@ button {
   gap: 6px;
 }
 .filterchip:hover {
-  background: #e5e9eb;
+  background: var(--chip-hover);
 }
 .filterchip:focus-visible {
   outline: 2px solid var(--green);
@@ -385,10 +434,10 @@ button {
   border-bottom: 1px solid var(--border);
 }
 .convitem:hover {
-  background: #f5f6f6;
+  background: var(--hover);
 }
 .convitem--active {
-  background: #f0f2f5;
+  background: var(--active);
 }
 .convitem__body {
   flex: 1;
@@ -416,6 +465,11 @@ button {
   font-size: 13px;
   flex-shrink: 0;
 }
+.convitem__pin {
+  font-size: 12px;
+  flex-shrink: 0;
+  opacity: 0.75;
+}
 
 /* En-tête repliable de la section "Archivées". */
 .archived-toggle {
@@ -433,7 +487,7 @@ button {
   font-weight: 600;
 }
 .archived-toggle:hover {
-  background: #f5f6f6;
+  background: var(--hover);
 }
 .archived-toggle__icon {
   font-size: 18px;
@@ -516,7 +570,7 @@ button {
   text-align: left;
 }
 .chathdr__id:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--tint);
 }
 .chathdr__info {
   flex: 1;
@@ -625,7 +679,7 @@ button {
   flex-direction: column;
   gap: 1px;
   border-left: 3px solid var(--green);
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--tint);
   border-radius: 4px;
   padding: 4px 8px;
   margin-bottom: 4px;
@@ -666,7 +720,7 @@ button {
   max-width: 80vw;
   height: auto;
   border-radius: 8px;
-  background-color: rgba(0, 0, 0, 0.04);
+  background-color: var(--tint);
   background-size: cover;
   background-position: center;
   cursor: pointer;
@@ -701,12 +755,12 @@ button {
   max-width: 320px;
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--tint);
   text-decoration: none;
   color: inherit;
 }
 .media-doc:hover {
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--tint-strong);
 }
 .media-doc__icon {
   font-size: 22px;
@@ -852,7 +906,7 @@ button {
   align-items: center;
   gap: 2px;
   padding: 1px 5px;
-  background: #fff;
+  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 11px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
@@ -886,7 +940,8 @@ button {
   border-radius: 20px;
   font-size: 15px;
   outline: none;
-  background: #fff;
+  background: var(--input-bg);
+  color: var(--text);
 }
 .composer__send {
   border: none;
@@ -919,7 +974,7 @@ button {
   transition: background 0.15s ease;
 }
 .composer__attach:hover:not(:disabled) {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--tint-strong);
 }
 .composer__attach:disabled {
   opacity: 0.5;
@@ -1169,7 +1224,7 @@ button {
   text-decoration: none;
 }
 a.gallery__file:hover {
-  background: #e5e9eb;
+  background: var(--chip-hover);
 }
 .gallery__file-icon {
   font-size: 26px;
@@ -1598,7 +1653,7 @@ a.gallery__file:hover {
   cursor: pointer;
 }
 .viewtoggle__btn:hover {
-  background: #e5e9eb;
+  background: var(--chip-hover);
 }
 .viewtoggle__btn:focus-visible {
   outline: 2px solid var(--green);
@@ -1656,7 +1711,7 @@ a.gallery__file:hover {
   flex: 0 0 auto;
   max-width: 130px;
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--input-bg);
   border-radius: 18px;
   padding: 8px 10px;
   font-size: 12px;

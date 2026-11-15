@@ -21,6 +21,7 @@ import AddAccountModal from '../whatsapp/AddAccountModal';
 import RelinkAccountModal from '../whatsapp/RelinkAccountModal';
 import ViewModeToggle from '../whatsapp/ViewModeToggle';
 import { useLogoutMutation } from '../auth/authApi';
+import ThemeToggle from '../ui/ThemeToggle';
 
 type ChatFilter = 'all' | 'unread' | 'groups';
 
@@ -86,7 +87,10 @@ export default function ChatList() {
     () =>
       chats
         ? [...chats].sort(
-            (a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0),
+            // Épinglées en tête (comme WhatsApp), puis les plus récentes.
+            (a, b) =>
+              Number(b.pinned) - Number(a.pinned) ||
+              (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0),
           )
         : [],
     [chats],
@@ -197,6 +201,11 @@ export default function ChatList() {
             <span className="convitem__preview">
               {c.lastMessagePreview ?? ''}
             </span>
+            {c.pinned && (
+              <span className="convitem__pin" title="Épinglée">
+                📌
+              </span>
+            )}
             {c.unreadCount > 0 && (
               <span className="badge">{c.unreadCount}</span>
             )}
@@ -284,6 +293,7 @@ export default function ChatList() {
           <span>{meName}</span>
         </div>
         <div className="sidebar__actions">
+          <ThemeToggle />
           <button
             className="iconbtn"
             title="Se déconnecter"

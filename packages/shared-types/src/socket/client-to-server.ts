@@ -61,6 +61,9 @@ export interface ClientToServerEvents {
   // Coupe / réactive les notifications d'une discussion (mute).
   'wa:mute': (input: { accountId?: string; chatJid: string; muted: boolean }) => void;
 
+  // Épingle / désépingle une discussion (3 au plus par compte, comme WhatsApp).
+  'wa:pin': (input: { accountId?: string; chatJid: string; pinned: boolean }) => void;
+
   // Bloque / débloque un contact (1:1).
   'wa:block': (input: { accountId?: string; chatJid: string; blocked: boolean }) => void;
 }

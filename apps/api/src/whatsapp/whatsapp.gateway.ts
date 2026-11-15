@@ -212,6 +212,14 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
     await this.wa.setMuted(input.accountId ?? 'default', input.chatJid, input.muted);
   }
 
+  @SubscribeMessage('wa:pin')
+  async onPin(
+    @MessageBody() input: { accountId?: string; chatJid: string; pinned: boolean },
+  ): Promise<void> {
+    this.logger.log(`wa:pin ${input.chatJid} -> ${input.pinned}`);
+    await this.wa.setPinned(input.accountId ?? 'default', input.chatJid, input.pinned);
+  }
+
   @SubscribeMessage('wa:block')
   async onBlock(
     @MessageBody() input: { accountId?: string; chatJid: string; blocked: boolean },

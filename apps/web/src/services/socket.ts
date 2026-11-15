@@ -108,6 +108,15 @@ export function archiveChat(
   socket?.emit('wa:archive', { accountId, chatJid, archived });
 }
 
+// Épingle / désépingle une discussion (3 au plus, le backend refuse au-delà).
+export function pinChat(
+  accountId: string,
+  chatJid: string,
+  pinned: boolean,
+): void {
+  socket?.emit('wa:pin', { accountId, chatJid, pinned });
+}
+
 // Coupe / réactive les notifications d'une discussion (mute).
 export function muteChat(
   accountId: string,
