@@ -2061,3 +2061,67 @@ a.gallery__file:hover {
   color: var(--green-dark);
   font-weight: 600;
 }
+
+/* ---------- Menu d'une discussion (liste) ---------- */
+.convitem-wrap {
+  position: relative;
+}
+.chatmenu {
+  position: absolute;
+  top: 30px;
+  right: 8px;
+}
+.chatmenu__trigger {
+  width: 24px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  opacity: 0;
+}
+.convitem-wrap:hover .chatmenu__trigger,
+.chatmenu__trigger:focus-visible,
+.chatmenu__trigger[aria-expanded='true'] {
+  opacity: 1;
+}
+@media (hover: none) {
+  .chatmenu__trigger {
+    opacity: 0.6;
+  }
+}
+.chatmenu__list {
+  position: absolute;
+  right: 0;
+  top: 26px;
+  z-index: 30;
+  min-width: 220px;
+  margin: 0;
+  padding: 6px 0;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+.chatmenu__list button {
+  width: 100%;
+  padding: 9px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+}
+.chatmenu__list button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.chatmenu__list button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.chatmenu__list .chatmenu__danger {
+  color: var(--danger);
+}

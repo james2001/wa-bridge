@@ -23,6 +23,7 @@ import ViewModeToggle from '../whatsapp/ViewModeToggle';
 import { useLogoutMutation } from '../auth/authApi';
 import ThemeToggle from '../ui/ThemeToggle';
 import NewChatModal from './NewChatModal';
+import ChatItemMenu from './ChatItemMenu';
 import { draftKey, useDrafts } from '../../lib/drafts';
 import {
   notificationPermission,
@@ -165,11 +166,13 @@ export default function ChatList() {
     { key: 'groups', label: 'Groupes', count: groupCount },
   ];
 
+  const pinnedCount = (chats ?? []).filter((c) => c.pinned).length;
+
   const renderItem = (c: WaChat) => {
     const title = chatTitle(c);
     return (
+      <div key={c.jid} className="convitem-wrap">
       <button
-        key={c.jid}
         className={
           'convitem' + (c.jid === selectedJid ? ' convitem--active' : '')
         }
@@ -236,6 +239,8 @@ export default function ChatList() {
           </div>
         </div>
       </button>
+      <ChatItemMenu chat={c} pinnedCount={pinnedCount} />
+      </div>
     );
   };
 

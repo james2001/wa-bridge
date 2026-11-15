@@ -2198,6 +2198,58 @@ export class WhatsappService
     );
   }
 
+  // Dernier message d'une discussion au format attendu par chatModify
+  // (archive, lu/non lu, suppression de discussion).
+  private async lastMessagesFor(
+    accountId: string,
+    jid: string,
+  ): Promise<{ key: { remoteJid: string; id: string; fromMe: boolean }; messageTimestamp: number }[]> {
+    const last = await this.prisma.waMessage
+      .findFirst({
+        where: { accountId, chatJid: jid },
+        orderBy: { sentAt: 'desc' },
+        select: { id: true, fromMe: true, sentAt: true },
+      })
+      .catch(() => null);
+    return last
+      ? [
+          {
+            key: { remoteJid: jid, id: last.id, fromMe: last.fromMe },
+            messageTimestamp: Math.floor(last.sentAt.getTime() / 1000),
+          },
+        ]
+      : [];
+  }
+
+  // Marque une discussion « non lue » (pastille sans nombre, comme WhatsApp).
+  // Réglage de TES appareils : aucun accusé n'est envoyé au contact.
+  async markUnread(accountId = DEFAULT_ACCOUNT_ID, chatJid: string): Promise<void> {
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    const row = await this.prisma.waChat
+      .update({ where: { accountId_jid: { accountId, jid } }, data: { unreadCount: -1 } })
+      .catch(() => null);
+    if (row) this.emit('chat-upsert', accountId, this.chatRowToDto(accountId, row));
+    const lastMessages = await this.lastMessagesFor(accountId, jid);
+    void this.syncChatModify(accountId, jid, { markRead: false, lastMessages }, 'markUnread');
+  }
+
+  // Supprime une discussion de TES appareils (messages compris). Le contact
+  // n'en voit rien. Local d'abord (autoritaire), puis synchro best-effort.
+  async deleteChat(accountId = DEFAULT_ACCOUNT_ID, chatJid: string): Promise<void> {
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    const lastMessages = await this.lastMessagesFor(accountId, jid);
+    await this.prisma.waMessage
+      .deleteMany({ where: { accountId, chatJid: jid } })
+      .catch(() => undefined);
+    await this.prisma.waChat
+      .deleteMany({ where: { accountId, jid } })
+      .catch(() => undefined);
+    this.emit('chats', accountId, await this.listChats(accountId));
+    if (lastMessages.length) {
+      void this.syncChatModify(accountId, jid, { delete: true, lastMessages }, 'deleteChat');
+    }
+  }
+
   // Épingle / désépingle une discussion. Comme WhatsApp, au plus
   // MAX_PINNED discussions épinglées par compte : au-delà, refus silencieux
   // (le front désactive déjà le bouton). Mutation app-state de TES appareils

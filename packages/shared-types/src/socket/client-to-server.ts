@@ -88,6 +88,15 @@ export interface ClientToServerEvents {
   // Épingle / désépingle une discussion (3 au plus par compte, comme WhatsApp).
   'wa:pin': (input: { accountId?: string; chatJid: string; pinned: boolean }) => void;
 
+  // Marque une discussion comme non lue (réglage de ses appareils).
+  'wa:mark-unread': (input: { accountId?: string; chatJid: string }) => void;
+
+  // Supprime une discussion de ses appareils (le contact n'en voit rien).
+  'wa:delete-chat': (
+    input: { accountId?: string; chatJid: string },
+    ack: (res: { ok: boolean; error?: string }) => void,
+  ) => void;
+
   // Bloque / débloque un contact (1:1).
   'wa:block': (input: { accountId?: string; chatJid: string; blocked: boolean }) => void;
 }

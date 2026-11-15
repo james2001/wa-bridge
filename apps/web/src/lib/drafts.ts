@@ -45,6 +45,19 @@ export function setDraft(key: string, text: string): void {
   listeners.forEach((l) => l());
 }
 
+// Efface tous les brouillons (mémoire + navigateur) : appelé dès que
+// l'application n'est plus authentifiée (déconnexion, session expirée), pour
+// ne pas laisser de textes privés dans le navigateur.
+export function clearDrafts(): void {
+  drafts = {};
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    /* rien à faire */
+  }
+  listeners.forEach((l) => l());
+}
+
 function subscribe(l: () => void): () => void {
   listeners.add(l);
   return () => listeners.delete(l);

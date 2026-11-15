@@ -293,6 +293,26 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
     await this.wa.setPinned(input.accountId ?? 'default', input.chatJid, input.pinned);
   }
 
+  @SubscribeMessage('wa:mark-unread')
+  async onMarkUnread(
+    @MessageBody() input: { accountId?: string; chatJid: string },
+  ): Promise<void> {
+    await this.wa.markUnread(input.accountId ?? 'default', input.chatJid);
+  }
+
+  @SubscribeMessage('wa:delete-chat')
+  async onDeleteChat(
+    @MessageBody() input: { accountId?: string; chatJid: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.logger.log(`wa:delete-chat ${input.chatJid}`);
+    try {
+      await this.wa.deleteChat(input.accountId ?? 'default', input.chatJid);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'delete_chat_failed' };
+    }
+  }
+
   @SubscribeMessage('wa:block')
   async onBlock(
     @MessageBody() input: { accountId?: string; chatJid: string; blocked: boolean },

@@ -12,6 +12,7 @@ import { useSocketBridge } from '../hooks/useSocketBridge';
 import LoginPage from '../features/auth/LoginPage';
 import ConnectionScreen from '../features/whatsapp/ConnectionScreen';
 import AppLayout from './AppLayout';
+import { clearDrafts } from '../lib/drafts';
 
 function Splash() {
   return (
@@ -64,6 +65,12 @@ export default function App() {
       active = false;
     };
   }, [refresh]);
+
+  // Plus authentifié (déconnexion, session expirée) : on efface les
+  // brouillons stockés dans le navigateur.
+  useEffect(() => {
+    if (!booting && !isAuthenticated) clearDrafts();
+  }, [booting, isAuthenticated]);
 
   if (booting) return <Splash />;
   if (!isAuthenticated) return <LoginPage />;
