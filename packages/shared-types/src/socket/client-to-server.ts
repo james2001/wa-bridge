@@ -106,6 +106,12 @@ export interface ClientToServerEvents {
     ack: (res: { ok: boolean; error?: string }) => void,
   ) => void;
 
+  // Transfère un message vers UNE discussion (toJid).
+  'wa:forward': (
+    input: { accountId?: string; chatJid: string; messageId: string; toJid: string },
+    ack: (res: { ok: boolean; error?: string }) => void,
+  ) => void;
+
   // Quitte un groupe (les membres voient « X est parti »).
   'wa:group-leave': (
     input: { accountId?: string; chatJid: string },

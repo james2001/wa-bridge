@@ -308,6 +308,25 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
     );
   }
 
+  @SubscribeMessage('wa:forward')
+  async onForward(
+    @MessageBody()
+    input: { accountId?: string; chatJid: string; messageId: string; toJid: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.logger.log(`wa:forward ${input.chatJid}/${input.messageId} -> ${input.toJid}`);
+    try {
+      await this.wa.forwardMessage(
+        input.accountId ?? 'default',
+        input.chatJid,
+        input.messageId,
+        String(input.toJid ?? ''),
+      );
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'forward_failed' };
+    }
+  }
+
   @SubscribeMessage('wa:group-leave')
   async onGroupLeave(
     @MessageBody() input: { accountId?: string; chatJid: string },

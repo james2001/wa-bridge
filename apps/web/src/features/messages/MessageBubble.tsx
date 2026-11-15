@@ -6,6 +6,7 @@ import { formatWhatsappText } from '../../lib/formatText';
 import MediaContent from './MediaContent';
 import MessageInfoModal from './MessageInfoModal';
 import DeleteMessageModal from './DeleteMessageModal';
+import ForwardModal from './ForwardModal';
 import { reactToMessage, starMessage } from '../../services/socket';
 import { useAppDispatch } from '../../app/hooks';
 import { setComposerAction } from '../ui/uiSlice';
@@ -198,6 +199,11 @@ export default function MessageBubble({
     message.status !== WaMessageStatus.PENDING &&
     message.status !== WaMessageStatus.ERROR;
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [forwardOpen, setForwardOpen] = useState(false);
+  // Transférable : texte ou média réel (pas position, contact, système).
+  const canForward =
+    canReact &&
+    (message.type === WaMessageType.TEXT || message.media != null);
   // « Pour tout le monde » : ses propres messages, non déjà supprimés, < 48 h
   // (le serveur revérifie).
   const canRevoke =
@@ -300,6 +306,17 @@ export default function MessageBubble({
               }
             >
               {message.starred ? '★' : '☆'}
+            </button>
+          )}
+          {canForward && (
+            <button
+              type="button"
+              className="react-trigger"
+              title="Transférer"
+              aria-label="Transférer ce message"
+              onClick={() => setForwardOpen(true)}
+            >
+              ↪
             </button>
           )}
           <button
@@ -416,6 +433,9 @@ export default function MessageBubble({
           </div>
         )}
       </div>
+      {forwardOpen && (
+        <ForwardModal message={message} onClose={() => setForwardOpen(false)} />
+      )}
       {deleteOpen && (
         <DeleteMessageModal
           message={message}

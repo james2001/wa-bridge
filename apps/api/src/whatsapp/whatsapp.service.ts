@@ -1778,6 +1778,7 @@ export class WhatsappService
     clientId: string,
     quotedId?: string,
     mentions?: string[],
+    forwarded = false,
   ): Promise<WaMessage> {
     const s = this.ensureSession(accountId);
     if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
@@ -1799,7 +1800,14 @@ export class WhatsappService
         : [];
     const sent = await s.sock.sendMessage(
       target,
-      mentioned.length ? { text, mentions: mentioned } : { text },
+      {
+        text,
+        ...(mentioned.length ? { mentions: mentioned } : {}),
+        // Transfert : WhatsApp affiche « Transféré » sur le message.
+        ...(forwarded
+          ? { contextInfo: { isForwarded: true, forwardingScore: 1 } }
+          : {}),
+      },
       quoted ? { quoted } : undefined,
     );
     const msg = sent ? mapWaMessage(sent, s.sock.user?.id, accountId) : null;
@@ -2022,6 +2030,46 @@ export class WhatsappService
       })
       .catch(() => []);
     return rows.map((r) => this.msgRowToDto(accountId, r));
+  }
+
+  // Transfère UN message vers UNE discussion (déclenché par la fenêtre de
+  // confirmation du front). Texte : renvoyé avec la mention « Transféré ».
+  // Média : téléchargé puis renvoyé avec sa légende. Autres types refusés.
+  async forwardMessage(
+    accountId = DEFAULT_ACCOUNT_ID,
+    chatJid: string,
+    messageId: string,
+    toJid: string,
+  ): Promise<WaMessage> {
+    if (!/^[0-9]+@(s\.whatsapp\.net|g\.us|lid)$/.test(toJid)) {
+      throw new Error('Destinataire invalide');
+    }
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    const row = await this.prisma.waMessage
+      .findUnique({
+        where: { accountId_chatJid_id: { accountId, chatJid: jid, id: messageId } },
+        select: { id: true, type: true, text: true },
+      })
+      .catch(() => null);
+    if (!row) throw new Error('Message introuvable');
+    if (row.type === WaMessageType.TEXT) {
+      if (!row.text?.trim()) throw new Error('Message vide');
+      return this.sendText(accountId, toJid, row.text, randomUUID(), undefined, undefined, true);
+    }
+    if ((WhatsappService.MEDIA_TYPES as readonly string[]).includes(row.type)) {
+      const media = await this.getMedia(accountId, jid, row.id);
+      return this.sendMedia(
+        accountId,
+        toJid,
+        {
+          buffer: media.buffer,
+          mimetype: media.mimetype,
+          originalname: media.fileName ?? 'fichier',
+        },
+        row.text ?? undefined,
+      );
+    }
+    throw new Error('Ce type de message ne peut pas être transféré');
   }
 
   // Réagit (emoji) à un message, ou retire sa réaction (emoji = ''). Envoyé

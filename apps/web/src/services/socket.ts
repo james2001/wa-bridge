@@ -193,6 +193,30 @@ export function starMessage(
   socket?.emit('wa:star', { accountId, chatJid, messageId, starred });
 }
 
+// Transfère un message vers une discussion. Refuse si le socket est coupé.
+export function forwardMessage(
+  accountId: string,
+  chatJid: string,
+  messageId: string,
+  toJid: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    const s = socket;
+    if (!s || !s.connected) {
+      reject(new Error('Socket non connecté'));
+      return;
+    }
+    s.timeout(60_000).emit(
+      'wa:forward',
+      { accountId, chatJid, messageId, toJid },
+      (err: Error | null, ack: { ok: boolean; error?: string }) => {
+        if (err) reject(err);
+        else resolve(ack);
+      },
+    );
+  });
+}
+
 // Quitte un groupe. Refuse si le socket est coupé.
 export function leaveGroup(
   accountId: string,
