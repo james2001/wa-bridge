@@ -4,6 +4,7 @@ import type { WaMessage, WaReaction } from '@app/shared-types';
 import { formatTime } from '../../lib/format';
 import MediaContent from './MediaContent';
 import MessageInfoModal from './MessageInfoModal';
+import DeleteMessageModal from './DeleteMessageModal';
 import { reactToMessage } from '../../services/socket';
 import { useAppDispatch } from '../../app/hooks';
 import { setComposerAction } from '../ui/uiSlice';
@@ -13,6 +14,8 @@ const EmojiPanel = lazy(() => import('../../components/EmojiPanel'));
 
 // Délai de modification d'un message (règle WhatsApp, revérifiée côté serveur).
 const EDIT_WINDOW_MS = 15 * 60 * 1000;
+// Délai « supprimer pour tout le monde » (revérifié côté serveur).
+const REVOKE_WINDOW_MS = 48 * 60 * 60 * 1000;
 
 interface Props {
   message: WaMessage;
@@ -189,6 +192,15 @@ export default function MessageBubble({
     message.status !== WaMessageStatus.PENDING &&
     message.status !== WaMessageStatus.ERROR &&
     message.type !== WaMessageType.SYSTEM;
+  // Actions possibles sur un message réellement envoyé/reçu.
+  const canAct =
+    message.status !== WaMessageStatus.PENDING &&
+    message.status !== WaMessageStatus.ERROR;
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  // « Pour tout le monde » : ses propres messages, non déjà supprimés, < 48 h
+  // (le serveur revérifie).
+  const canRevoke =
+    canReact && isOwn && Date.now() - message.timestamp < REVOKE_WINDOW_MS;
   const myReaction = message.reactions.find((r) => r.fromMe)?.emoji ?? null;
   // Modifiable : son propre message texte envoyé il y a moins de 15 min
   // (le serveur revérifie tout).
@@ -210,8 +222,10 @@ export default function MessageBubble({
 
   return (
     <div className={'bubblerow' + (isOwn ? ' bubblerow--own' : '')}>
-      {canReact && (
+      {canAct && (
         <div className="bubblerow__react">
+          {canReact && (
+          <>
           <button
             type="button"
             className="react-trigger"
@@ -242,6 +256,8 @@ export default function MessageBubble({
           >
             ↩
           </button>
+          </>
+          )}
           {canEdit && (
             <button
               type="button"
@@ -261,6 +277,15 @@ export default function MessageBubble({
               ✎
             </button>
           )}
+          <button
+            type="button"
+            className="react-trigger"
+            title="Supprimer"
+            aria-label="Supprimer ce message"
+            onClick={() => setDeleteOpen(true)}
+          >
+            🗑
+          </button>
           {pickerOpen && (
             <Suspense fallback={null}>
               <EmojiPanel
@@ -359,6 +384,13 @@ export default function MessageBubble({
           </div>
         )}
       </div>
+      {deleteOpen && (
+        <DeleteMessageModal
+          message={message}
+          canRevoke={canRevoke}
+          onClose={() => setDeleteOpen(false)}
+        />
+      )}
       {infoOpen && (
         <MessageInfoModal message={message} onClose={() => setInfoOpen(false)} />
       )}

@@ -1993,3 +1993,46 @@ a.gallery__file:hover {
   color: var(--text-muted);
   margin-right: 4px;
 }
+
+/* ---------- Confirmation de suppression d'un message ---------- */
+.delmsg {
+  max-width: 360px;
+}
+.delmsg__excerpt {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+.delmsg__hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.delmsg__error {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--danger);
+}
+.delmsg__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.delmsg__danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+.delmsg__danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
+}
+.delmsg__cancel {
+  background: var(--tint-strong);
+  color: var(--text);
+}
+.delmsg button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

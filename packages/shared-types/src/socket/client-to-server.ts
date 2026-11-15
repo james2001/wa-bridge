@@ -67,6 +67,18 @@ export interface ClientToServerEvents {
     ack: (res: { ok: boolean; error?: string }) => void,
   ) => void;
 
+  // Supprime un message : 'me' = pour moi (ses appareils), 'everyone' = pour
+  // tout le monde (ses propres messages, 48 h max).
+  'wa:delete': (
+    input: {
+      accountId?: string;
+      chatJid: string;
+      messageId: string;
+      scope: 'me' | 'everyone';
+    },
+    ack: (res: { ok: boolean; error?: string }) => void,
+  ) => void;
+
   // Réagit à un message avec un emoji ('' = retire sa réaction).
   'wa:react': (
     input: { accountId?: string; chatJid: string; messageId: string; emoji: string },

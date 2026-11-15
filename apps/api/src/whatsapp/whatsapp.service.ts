@@ -167,6 +167,8 @@ export class WhatsappService
   private static readonly REACTION_TIMEOUT_MS = 15_000;
   // Fenêtre de modification d'un message (règle WhatsApp).
   static readonly EDIT_WINDOW_MS = 15 * 60 * 1000;
+  // Fenêtre « supprimer pour tout le monde » (prudente, sous la limite WhatsApp).
+  static readonly REVOKE_WINDOW_MS = 48 * 60 * 60 * 1000;
   private static readonly AVATAR_MAX_CONCURRENT = 3;
   // 24 h: une entrée "pas de photo" mise à tort (timeout) se répare en 1 jour.
   private static readonly AVATAR_NEG_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
@@ -1871,6 +1873,82 @@ export class WhatsappService
     // Reflète tout de suite (l'écho WhatsApp refera la même chose).
     await this.applyEdit(accountId, jid, row.id, text);
     await this.refreshChatPreview(accountId, jid, true);
+  }
+
+  // Supprime un message.
+  // - 'everyone' : révocation WhatsApp, seulement SES messages, 48 h max ;
+  //   le contact voit « Ce message a été supprimé ».
+  // - 'me' : retiré de la base locale + synchro « supprimer pour moi » vers
+  //   ses propres appareils (best-effort) ; le contact ne voit rien.
+  // Règles vérifiées ici, côté serveur.
+  async deleteMessage(
+    accountId = DEFAULT_ACCOUNT_ID,
+    chatJid: string,
+    messageId: string,
+    scope: 'me' | 'everyone',
+  ): Promise<void> {
+    if (scope !== 'me' && scope !== 'everyone') {
+      throw new Error('Portée de suppression invalide');
+    }
+    const s = this.ensureSession(accountId);
+    if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
+      throw new Error('WhatsApp non connecté');
+    }
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    const where = {
+      accountId_chatJid_id: { accountId, chatJid: jid, id: messageId },
+    };
+    const row = await this.prisma.waMessage
+      .findUnique({
+        where,
+        select: { id: true, fromMe: true, senderJid: true, sentAt: true, type: true },
+      })
+      .catch(() => null);
+    if (!row) throw new Error('Message introuvable');
+    const key = {
+      remoteJid: jid,
+      id: row.id,
+      fromMe: row.fromMe,
+      ...(isJidGroup(jid) && !row.fromMe && row.senderJid
+        ? { participant: row.senderJid }
+        : {}),
+    };
+
+    if (scope === 'everyone') {
+      if (!row.fromMe) {
+        throw new Error('Seuls vos propres messages peuvent être supprimés pour tous');
+      }
+      if (row.type === WaMessageType.SYSTEM) {
+        throw new Error('Message déjà supprimé');
+      }
+      if (Date.now() - row.sentAt.getTime() > WhatsappService.REVOKE_WINDOW_MS) {
+        throw new Error('Délai dépassé pour supprimer pour tout le monde (48 h)');
+      }
+      await this.withTimeout(
+        s.sock.sendMessage(jid, { delete: key }),
+        WhatsappService.REACTION_TIMEOUT_MS,
+      );
+      await this.applyRevoke(accountId, jid, row.id);
+      await this.refreshChatPreview(accountId, jid, true);
+      return;
+    }
+
+    // Pour moi : local d'abord (autoritaire), puis synchro de ses appareils.
+    await this.prisma.waMessage.delete({ where }).catch(() => null);
+    this.emit('message-deleted', accountId, { id: row.id, chatJid: jid });
+    await this.refreshChatPreview(accountId, jid, true);
+    void this.syncChatModify(
+      accountId,
+      jid,
+      {
+        deleteForMe: {
+          deleteMedia: false,
+          key,
+          timestamp: Math.floor(row.sentAt.getTime() / 1000),
+        },
+      },
+      'deleteForMe',
+    );
   }
 
   // Réagit (emoji) à un message, ou retire sa réaction (emoji = ''). Envoyé

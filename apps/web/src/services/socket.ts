@@ -104,6 +104,31 @@ export function editMessage(
   });
 }
 
+// Supprime un message ('me' = pour moi, 'everyone' = pour tout le monde).
+// Refuse si le socket est coupé (jamais mis en file).
+export function deleteMessage(
+  accountId: string,
+  chatJid: string,
+  messageId: string,
+  scope: 'me' | 'everyone',
+): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    const s = socket;
+    if (!s || !s.connected) {
+      reject(new Error('Socket non connecté'));
+      return;
+    }
+    s.timeout(20_000).emit(
+      'wa:delete',
+      { accountId, chatJid, messageId, scope },
+      (err: Error | null, ack: { ok: boolean; error?: string }) => {
+        if (err) reject(err);
+        else resolve(ack);
+      },
+    );
+  });
+}
+
 // Réagit à un message ('' = retire sa réaction). Refuse si le socket est
 // coupé (pas de mise en file : une réaction n'est envoyée qu'au clic).
 export function reactToMessage(

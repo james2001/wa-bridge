@@ -115,6 +115,12 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
         (accountId: string, p: { chatJid: string | null }) =>
           this.server.emit('wa:history-synced', { accountId, ...p }),
       );
+      // Message supprimé « pour moi » -> retiré de l'affichage.
+      this.wa.on(
+        'message-deleted',
+        (accountId: string, p: { id: string; chatJid: string }) =>
+          this.server.emit('wa:message-deleted', { accountId, ...p }),
+      );
       this.wa.on(
         'reaction',
         (
@@ -181,6 +187,31 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
       return { ok: true, message };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : 'send_failed' };
+    }
+  }
+
+  // Suppression d'un message (règles vérifiées par le service).
+  @SubscribeMessage('wa:delete')
+  async onDelete(
+    @MessageBody()
+    input: {
+      accountId?: string;
+      chatJid: string;
+      messageId: string;
+      scope: 'me' | 'everyone';
+    },
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.logger.log(`wa:delete ${input.chatJid}/${input.messageId} (${input.scope})`);
+    try {
+      await this.wa.deleteMessage(
+        input.accountId ?? 'default',
+        input.chatJid,
+        input.messageId,
+        input.scope,
+      );
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'delete_failed' };
     }
   }
 
