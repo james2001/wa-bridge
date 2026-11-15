@@ -19,6 +19,7 @@ import type {
   WaChatsResponse,
   WaConnection,
   WaContactAbout,
+  WaContactsResponse,
   WaCommunitiesResponse,
   WaMessage,
   WaMessageInfoResponse,
@@ -51,6 +52,14 @@ export class WhatsappController {
     @Query('accountId') accountId = 'default',
   ): Promise<WaChatsResponse> {
     return { chats: await this.wa.listChats(accountId) };
+  }
+
+  // Carnet du compte pour « Nouvelle discussion » (lecture seule).
+  @Get('contacts')
+  async contacts(
+    @Query('accountId') accountId = 'default',
+  ): Promise<WaContactsResponse> {
+    return { contacts: await this.wa.listContacts(accountId) };
   }
 
   // Communautés du compte (regroupent des groupes) — vue lecture seule.

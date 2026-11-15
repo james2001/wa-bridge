@@ -43,6 +43,20 @@ export interface WaContact {
   avatarUrl: string | null;
 }
 
+// Entrée du carnet pour « Nouvelle discussion » (contacts 1:1 joignables).
+// saved = enregistré dans le carnet du téléphone (sinon simple pseudo WhatsApp,
+// typiquement une personne croisée dans un groupe).
+export interface WaContactEntry {
+  jid: string; // JID pn …@s.whatsapp.net
+  name: string;
+  saved: boolean;
+}
+
+// GET /api/wa/contacts?accountId= -> carnet du compte (enregistrés d'abord).
+export interface WaContactsResponse {
+  contacts: WaContactEntry[];
+}
+
 // Une discussion dans la liste.
 export interface WaChat {
   accountId: string; // compte propriétaire

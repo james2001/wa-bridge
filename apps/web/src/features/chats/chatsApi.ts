@@ -7,6 +7,8 @@ import type {
   WaCommunity,
   WaMediaItem,
   WaContactAbout,
+  WaContactEntry,
+  WaContactsResponse,
 } from '@app/shared-types';
 
 // Argument scopé au compte pour les ressources liées à une discussion.
@@ -53,10 +55,17 @@ export const chatsApi = api.injectEndpoints({
         { type: 'WaCommunities' as const, id: accountId },
       ],
     }),
+    // Carnet du compte (« Nouvelle discussion »), clé de cache = accountId.
+    getContacts: builder.query<WaContactEntry[], string>({
+      query: (accountId) => ({ url: '/wa/contacts', params: { accountId } }),
+      transformResponse: (response: WaContactsResponse) => response.contacts,
+      keepUnusedDataFor: 300,
+    }),
   }),
 });
 
 export const {
+  useGetContactsQuery,
   useGetChatsQuery,
   useGetChatMediaQuery,
   useGetContactAboutQuery,

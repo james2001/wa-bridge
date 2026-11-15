@@ -22,6 +22,7 @@ import RelinkAccountModal from '../whatsapp/RelinkAccountModal';
 import ViewModeToggle from '../whatsapp/ViewModeToggle';
 import { useLogoutMutation } from '../auth/authApi';
 import ThemeToggle from '../ui/ThemeToggle';
+import NewChatModal from './NewChatModal';
 
 type ChatFilter = 'all' | 'unread' | 'groups';
 
@@ -54,6 +55,7 @@ export default function ChatList() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<ChatFilter>('all');
   const [showAddAccount, setShowAddAccount] = useState(false);
+  const [showNewChat, setShowNewChat] = useState(false);
   const [relinkAccount, setRelinkAccount] = useState<WaAccount | null>(null);
   // Communautés (regroupement des groupes dans l'onglet « Groupes »).
   const { data: communities } = useGetCommunitiesQuery(activeAccountId);
@@ -293,6 +295,15 @@ export default function ChatList() {
           <span>{meName}</span>
         </div>
         <div className="sidebar__actions">
+          <button
+            type="button"
+            className="iconbtn"
+            title="Nouvelle discussion"
+            aria-label="Nouvelle discussion"
+            onClick={() => setShowNewChat(true)}
+          >
+            ✎
+          </button>
           <ThemeToggle />
           <button
             className="iconbtn"
@@ -384,6 +395,12 @@ export default function ChatList() {
           )}
       </div>
 
+      {showNewChat && (
+        <NewChatModal
+          accountId={activeAccountId}
+          onClose={() => setShowNewChat(false)}
+        />
+      )}
       {showAddAccount && (
         <AddAccountModal onClose={() => setShowAddAccount(false)} />
       )}

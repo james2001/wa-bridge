@@ -1890,3 +1890,76 @@ a.gallery__file:hover {
 .composer-wrap .composer {
   border-top: none;
 }
+
+/* ---------- Nouvelle discussion ---------- */
+.newchat {
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 12px;
+}
+.newchat__search {
+  width: 100%;
+  padding: 9px 14px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  font-size: 14px;
+  outline: none;
+}
+.newchat__search:focus {
+  border-color: var(--green);
+}
+.newchat__list {
+  margin-top: 10px;
+  overflow-y: auto;
+  max-height: 60vh;
+}
+.newchat__list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.newchat__section {
+  margin: 12px 4px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green-dark);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.newchat__item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 6px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+.newchat__item:hover,
+.newchat__item:focus-visible {
+  background: var(--hover);
+}
+.newchat__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.newchat__name {
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.newchat__num {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.newchat__empty {
+  margin: 12px 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+}

@@ -44,6 +44,7 @@ import {
   type WaAccountsResponse,
   type WaChat,
   type WaCommunitiesResponse,
+  type WaContactEntry,
   type WaCommunity,
   type WaConnection,
   type WaContactAbout,
@@ -2558,6 +2559,36 @@ export class WhatsappService
       .filter((r) => !this.isEmptyDirectChat(r))
       .filter((r) => !communityJids.has(r.jid))
       .map((r) => this.chatRowToDto(accountId, r));
+  }
+
+  // Carnet du compte : contacts 1:1 joignables par numéro (JID pn), un par
+  // personne, avec le meilleur nom (carnet > pseudo). Enregistrés d'abord,
+  // puis ordre alphabétique. Lecture seule.
+  async listContacts(accountId = DEFAULT_ACCOUNT_ID): Promise<WaContactEntry[]> {
+    const rows = await this.prisma.waContact
+      .findMany({
+        where: { accountId, isGroup: false },
+        select: { jid: true, name: true, pushName: true },
+      })
+      .catch(() => [] as { jid: string; name: string | null; pushName: string | null }[]);
+    const byJid = new Map<string, WaContactEntry>();
+    for (const r of rows) {
+      const jid = this.canonicalJid(accountId, r.jid) ?? r.jid;
+      if (!jid.endsWith('@s.whatsapp.net')) continue; // @lid sans numéro connu
+      const saved = cleanName(r.name);
+      const push = cleanName(r.pushName);
+      const name = saved ?? push;
+      if (!name) continue;
+      const prev = byJid.get(jid);
+      if (!prev || (saved && !prev.saved)) {
+        byJid.set(jid, { jid, name, saved: saved !== null });
+      }
+    }
+    return [...byJid.values()].sort(
+      (a, b) =>
+        Number(b.saved) - Number(a.saved) ||
+        a.name.localeCompare(b.name, 'fr', { sensitivity: 'base' }),
+    );
   }
 
   // Communautés du compte (regroupent des groupes) — vue lecture seule.
