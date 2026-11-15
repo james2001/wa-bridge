@@ -36,6 +36,7 @@ export interface ClientToServerEvents {
       text: string;
       clientId: string;
       quotedId?: string;
+      mentions?: string[]; // JIDs mentionnés (@) dans un groupe
     },
     ack: (res: { ok: boolean; message?: WaMessage; error?: string }) => void,
   ) => void;

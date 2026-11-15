@@ -52,6 +52,7 @@ export interface SendTextInput {
   text: string;
   clientId: string;
   quotedId?: string;
+  mentions?: string[];
 }
 
 export interface SendTextAck {

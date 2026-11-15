@@ -8,6 +8,7 @@ import { http } from '../../services/http';
 import { upsertMessage } from './messagesApi';
 import { upsertPersonMessage } from '../people/peopleApi';
 import { draftKey, getDraft, setDraft } from '../../lib/drafts';
+import { useGetGroupInfoQuery } from '../chats/chatsApi';
 
 const EmojiPanel = lazy(() => import('../../components/EmojiPanel'));
 
@@ -155,6 +156,73 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
     el.style.height = `${el.scrollHeight}px`;
   }, [text]);
 
+  // --- Mentions @ (groupes) ---
+  // Libellé affiché « @Nom » -> JID mentionné ; converti en « @numéro » +
+  // liste mentions à l'envoi (format WhatsApp).
+  const isGroupChat = chatJid.endsWith('@g.us');
+  const mentionsRef = useRef(new Map<string, string>());
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const { data: groupInfo } = useGetGroupInfoQuery(
+    { accountId: sender, jid: chatJid },
+    { skip: !isGroupChat || mentionQuery === null },
+  );
+  const mentionCandidates =
+    mentionQuery === null || !groupInfo
+      ? []
+      : groupInfo.participants
+          .filter((p) => !p.isMe)
+          .filter((p) => {
+            const q = mentionQuery.toLowerCase();
+            return (
+              !q ||
+              (p.name ?? '').toLowerCase().includes(q) ||
+              p.jid.split('@')[0].includes(q)
+            );
+          })
+          .slice(0, 8);
+
+  const detectMention = (value: string) => {
+    if (!isGroupChat || editing) return setMentionQuery(null);
+    const caret = inputRef.current?.selectionStart ?? value.length;
+    const m = /(^|\s)@([^\s@]{0,30})$/u.exec(value.slice(0, caret));
+    setMentionQuery(m ? m[2] : null);
+    setMentionIndex(0);
+  };
+
+  const pickMention = (p: { jid: string; name: string | null }) => {
+    const el = inputRef.current;
+    const caret = el?.selectionStart ?? text.length;
+    const before = text.slice(0, caret);
+    const m = /@([^\s@]{0,30})$/u.exec(before);
+    if (!m) return;
+    const label = (p.name ?? p.jid.split('@')[0]).replace(/\s+/g, ' ').trim();
+    mentionsRef.current.set(label, p.jid);
+    const insert = `@${label} `;
+    const next = before.slice(0, m.index) + insert + text.slice(caret);
+    setText(next);
+    setMentionQuery(null);
+    requestAnimationFrame(() => {
+      if (!el) return;
+      el.focus();
+      const pos = m.index + insert.length;
+      el.setSelectionRange(pos, pos);
+    });
+  };
+
+  // Texte réellement envoyé : « @Nom » -> « @numéro », + JIDs mentionnés.
+  const withMentions = (value: string): { text: string; mentions: string[] } => {
+    let out = value;
+    const mentions: string[] = [];
+    for (const [label, jid] of mentionsRef.current) {
+      const tag = `@${label}`;
+      if (!out.includes(tag)) continue;
+      out = out.split(tag).join(`@${jid.split('@')[0]}`);
+      mentions.push(jid);
+    }
+    return { text: out, mentions };
+  };
+
   const onChange = (value: string) => {
     setText(value);
     if (value.length > 0) {
@@ -237,12 +305,15 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
     mirror(optimistic);
 
     try {
+      const out = withMentions(value);
+      mentionsRef.current.clear();
       const ack = await sendText({
         accountId: sender,
         chatJid,
-        text: value,
+        text: out.text,
         clientId,
         ...(quotedId ? { quotedId } : {}),
+        ...(out.mentions.length ? { mentions: out.mentions } : {}),
       });
       if (ack.ok && ack.message) {
         mirror(ack.message);
@@ -400,6 +471,28 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
       >
         <PaperclipIcon />
       </button>
+      {mentionQuery !== null && mentionCandidates.length > 0 && (
+        <ul className="mentions" role="listbox" aria-label="Mentionner">
+          {mentionCandidates.map((p, i) => (
+            <li key={p.jid}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={i === mentionIndex}
+                className={'mentions__item' + (i === mentionIndex ? ' mentions__item--on' : '')}
+                onMouseDown={(e) => {
+                  // mousedown : garder le focus dans la saisie.
+                  e.preventDefault();
+                  pickMention(p);
+                }}
+              >
+                <span className="mentions__name">{p.name ?? p.jid.split('@')[0]}</span>
+                <span className="mentions__num">{p.jid.split('@')[0]}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <textarea
         ref={inputRef}
         className="composer__input"
@@ -407,8 +500,31 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
         placeholder="Écrivez un message"
         aria-label="Message"
         value={text}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          onChange(e.target.value);
+          detectMention(e.target.value);
+        }}
         onKeyDown={(e) => {
+          // Liste de mentions ouverte : flèches, Entrée/Tab = choisir (jamais
+          // envoyer), Échap = fermer.
+          if (mentionQuery !== null && mentionCandidates.length > 0) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              const n = mentionCandidates.length;
+              setMentionIndex((i) => (i + (e.key === 'ArrowDown' ? 1 : n - 1)) % n);
+              return;
+            }
+            if (e.key === 'Enter' || e.key === 'Tab') {
+              e.preventDefault();
+              pickMention(mentionCandidates[Math.min(mentionIndex, mentionCandidates.length - 1)]);
+              return;
+            }
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              setMentionQuery(null);
+              return;
+            }
+          }
           if (e.key === 'Escape' && (replyTo || editing)) {
             cancelAction();
             return;

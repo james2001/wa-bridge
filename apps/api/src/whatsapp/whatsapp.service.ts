@@ -1777,6 +1777,7 @@ export class WhatsappService
     text: string,
     clientId: string,
     quotedId?: string,
+    mentions?: string[],
   ): Promise<WaMessage> {
     const s = this.ensureSession(accountId);
     if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
@@ -1789,9 +1790,16 @@ export class WhatsappService
     const quoted = quotedId
       ? await this.quotedFor(accountId, target, quotedId)
       : undefined;
+    // Mentions : groupes seulement, JIDs WhatsApp valides, 50 max.
+    const mentioned =
+      isJidGroup(target) && mentions?.length
+        ? [...new Set(mentions)]
+            .filter((j) => /^[0-9]+@(s\.whatsapp\.net|lid)$/.test(j))
+            .slice(0, 50)
+        : [];
     const sent = await s.sock.sendMessage(
       target,
-      { text },
+      mentioned.length ? { text, mentions: mentioned } : { text },
       quoted ? { quoted } : undefined,
     );
     const msg = sent ? mapWaMessage(sent, s.sock.user?.id, accountId) : null;
