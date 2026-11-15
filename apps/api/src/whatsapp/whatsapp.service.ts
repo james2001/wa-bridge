@@ -137,6 +137,9 @@ interface AccountSession {
   avatarActive: number;
   avatarQueue: Array<() => void>;
   localMetaGuard: Map<string, Partial<Record<MetaField, number>>>;
+  // Relecture complète de l'app-state en cours (cf. resyncChatStateOnce) :
+  // seuls les épinglages en sont retenus.
+  chatStateReplay: boolean;
 }
 
 // Champs app-state posés localement puis renvoyés en écho par WhatsApp.
@@ -164,6 +167,9 @@ export class WhatsappService
   private static readonly LOCAL_META_GUARD_MS = 20_000;
   // Limite WhatsApp du nombre de discussions épinglées.
   static readonly MAX_PINNED = 3;
+  // Marqueur (dans le dossier auth du compte) : relecture app-state déjà faite.
+  private static readonly CHAT_STATE_RESYNC_MARK = '.wa-bridge-chat-state-resync-v1';
+  private static readonly CHAT_STATE_RESYNC_TIMEOUT_MS = 60_000;
   private static readonly REACTION_TIMEOUT_MS = 15_000;
   // Fenêtre de modification d'un message (règle WhatsApp).
   static readonly EDIT_WINDOW_MS = 15 * 60 * 1000;
@@ -308,6 +314,7 @@ export class WhatsappService
         avatarActive: 0,
         avatarQueue: [],
         localMetaGuard: new Map(),
+        chatStateReplay: false,
       };
       this.sessions.set(accountId, s);
     }
@@ -700,6 +707,9 @@ export class WhatsappService
       this.logger.log(`[${accountId}] WhatsApp connecté`);
       void this.backfillGroupSubjects(accountId);
       void this.syncBlocklist(accountId);
+      // Une fois par compte : relit l'état « épinglé / archivé / lu » depuis
+      // WhatsApp (laisse d'abord finir la synchro de connexion).
+      setTimeout(() => void this.resyncChatStateOnce(accountId), 20_000);
     }
 
     if (connection === 'close') {
@@ -1390,7 +1400,13 @@ export class WhatsappService
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     updates: any[],
   ): Promise<void> {
-    for (const ch of updates) {
+    // Lu AVANT le premier await : l'événement vient-il de la relecture
+    // complète de l'app-state ? Dans ce cas on ne garde QUE l'épinglage :
+    // un « lu » ou un « archivé » ancien rejoué écraserait l'état réel
+    // (nouveaux messages arrivés depuis).
+    const replay = this.ensureSession(accountId).chatStateReplay;
+    for (const raw of updates) {
+      const ch = replay ? { id: raw?.id, pinned: raw?.pinned } : raw;
       if (!ch?.id || this.isIgnoredChat(ch.id)) continue;
       const hasUnread = typeof ch.unreadCount === 'number';
       const meta = this.chatMetaOf(ch);
@@ -2210,6 +2226,56 @@ export class WhatsappService
     if (row) this.emit('chat-upsert', accountId, this.chatRowToDto(accountId, row));
     // 2) Synchro WhatsApp best-effort, sans bloquer.
     void this.syncChatModify(accountId, jid, { pin: pinned }, 'pin');
+  }
+
+  // Relecture complète, UNE FOIS par compte, de la collection app-state
+  // « regular_low » (épinglage, archivage, lu/non lu). Les épinglages faits
+  // sur le téléphone avant que le pont ne sache les lire n'arrivent sinon
+  // jamais : Baileys ne rejoue que les changements postérieurs à la version
+  // déjà connue. On efface cette version pour forcer un instantané complet ;
+  // Baileys réémet alors chats.update pour chaque discussion, que
+  // onChatsUpdate enregistre. Lecture seule côté WhatsApp : rien n'est envoyé
+  // aux contacts. En cas d'échec, la version précédente est restaurée.
+  private async resyncChatStateOnce(accountId: string): Promise<void> {
+    const s = this.ensureSession(accountId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sock = s.sock as any;
+    if (!sock || s.connection.state !== ConnectionState.OPEN) return;
+    const mark = join(s.authDir, WhatsappService.CHAT_STATE_RESYNC_MARK);
+    if (await stat(mark).then(() => true, () => false)) return;
+    const keys = sock.authState?.keys;
+    if (!keys || typeof sock.resyncAppState !== 'function') return;
+    const name = 'regular_low';
+    const prev = (await keys.get('app-state-sync-version', [name]))?.[name];
+    try {
+      await keys.set({ 'app-state-sync-version': { [name]: null } });
+      s.chatStateReplay = true;
+      try {
+        await this.withTimeout(
+          sock.resyncAppState([name], false) as Promise<unknown>,
+          WhatsappService.CHAT_STATE_RESYNC_TIMEOUT_MS,
+        );
+      } finally {
+        s.chatStateReplay = false;
+      }
+      // Laisse les handlers asynchrones (déclenchés au flush) écrire en base.
+      await new Promise((r) => setTimeout(r, 3_000));
+      await writeFile(mark, new Date().toISOString());
+      const pinned = await this.prisma.waChat
+        .count({ where: { accountId, pinned: true } })
+        .catch(() => -1);
+      this.logger.log(
+        `[${accountId}] état des discussions relu depuis WhatsApp (${pinned} épinglée(s))`,
+      );
+      this.emit('chats', accountId, await this.listChats(accountId));
+    } catch (e) {
+      this.logger.warn(`[${accountId}] relecture app-state échouée: ${e}`);
+      if (prev) {
+        await keys
+          .set({ 'app-state-sync-version': { [name]: prev } })
+          .catch(() => undefined);
+      }
+    }
   }
 
   // Pousse une mutation app-state vers WhatsApp sans jamais bloquer l'appelant.
