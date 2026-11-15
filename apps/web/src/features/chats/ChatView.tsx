@@ -26,7 +26,9 @@ export default function ChatView({ jid }: Props) {
     <section className="chat">
       <ChatHeader chat={chat} jid={jid} accountId={accountId} />
       <MessageList jid={jid} accountId={accountId} />
-      <Composer chatJid={jid} accountId={accountId} />
+      {/* key : une saisie neuve par discussion (un texte en cours ne doit
+          jamais passer d'un contact à un autre). */}
+      <Composer key={`${accountId}|${jid}`} chatJid={jid} accountId={accountId} />
     </section>
   );
 }

@@ -46,7 +46,12 @@ export default function PersonView({ jid }: Props) {
       <PersonHeader person={person} jid={jid} />
       <PersonTimeline jid={jid} showAccount={multiAccount} />
       {options.length > 0 ? (
-        <Composer chatJid={jid} accountId={options[0].id} accountOptions={options} />
+        <Composer
+          key={jid}
+          chatJid={jid}
+          accountId={options[0].id}
+          accountOptions={options}
+        />
       ) : (
         <div className="readonly-note">Chargement du compte…</div>
       )}
