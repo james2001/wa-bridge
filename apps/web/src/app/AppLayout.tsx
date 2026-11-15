@@ -6,6 +6,7 @@ import ContactInfoPanel from '../features/chats/ContactInfoPanel';
 import PeopleList from '../features/people/PeopleList';
 import PersonView from '../features/people/PersonView';
 import { selectAccounts } from '../features/whatsapp/waSlice';
+import { useUnreadTitle } from '../hooks/useUnreadTitle';
 import {
   selectInfoPanelOpen,
   selectSelectedChatJid,
@@ -26,6 +27,7 @@ function EmptyChat() {
 
 export default function AppLayout() {
   const dispatch = useAppDispatch();
+  useUnreadTitle();
   const viewMode = useAppSelector(selectViewMode);
   const accounts = useAppSelector(selectAccounts);
   const selectedJid = useAppSelector(selectSelectedChatJid);

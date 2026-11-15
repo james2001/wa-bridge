@@ -1963,3 +1963,19 @@ a.gallery__file:hover {
   font-size: 13px;
   color: var(--text-muted);
 }
+
+/* ---------- Bandeau d'activation des notifications ---------- */
+.notifbar {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--green-light);
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+}
+.notifbar:hover {
+  filter: brightness(0.97);
+}

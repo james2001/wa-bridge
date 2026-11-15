@@ -23,6 +23,10 @@ import ViewModeToggle from '../whatsapp/ViewModeToggle';
 import { useLogoutMutation } from '../auth/authApi';
 import ThemeToggle from '../ui/ThemeToggle';
 import NewChatModal from './NewChatModal';
+import {
+  notificationPermission,
+  requestNotificationPermission,
+} from '../../lib/notify';
 
 type ChatFilter = 'all' | 'unread' | 'groups';
 
@@ -56,6 +60,8 @@ export default function ChatList() {
   const [filter, setFilter] = useState<ChatFilter>('all');
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [showNewChat, setShowNewChat] = useState(false);
+  // Autorisation des notifications du navigateur (demandée sur clic).
+  const [notifPerm, setNotifPerm] = useState(notificationPermission);
   const [relinkAccount, setRelinkAccount] = useState<WaAccount | null>(null);
   // Communautés (regroupement des groupes dans l'onglet « Groupes »).
   const { data: communities } = useGetCommunitiesQuery(activeAccountId);
@@ -335,6 +341,18 @@ export default function ChatList() {
           }}
         />
       </div>
+
+      {notifPerm === 'default' && (
+        <button
+          type="button"
+          className="notifbar"
+          onClick={() => {
+            void requestNotificationPermission().then(setNotifPerm);
+          }}
+        >
+          🔔 Activer les notifications de nouveaux messages
+        </button>
+      )}
 
       <div className="filterbar">
         {filters.map((f) => (
