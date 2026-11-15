@@ -136,6 +136,7 @@ export interface WaMessage {
   media: WaMediaInfo | null;
   reactions: WaReaction[]; // réactions emoji posées sur ce message
   clientId: string | null; // corrélation avec l'écho optimistic
+  edited?: boolean; // texte modifié après envoi
 }
 
 // --- REST ---

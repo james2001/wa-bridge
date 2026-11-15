@@ -61,6 +61,12 @@ export interface ClientToServerEvents {
   // Coupe / réactive les notifications d'une discussion (mute).
   'wa:mute': (input: { accountId?: string; chatJid: string; muted: boolean }) => void;
 
+  // Modifie le texte d'un de SES messages texte (15 min max après l'envoi).
+  'wa:edit': (
+    input: { accountId?: string; chatJid: string; messageId: string; text: string },
+    ack: (res: { ok: boolean; error?: string }) => void,
+  ) => void;
+
   // Réagit à un message avec un emoji ('' = retire sa réaction).
   'wa:react': (
     input: { accountId?: string; chatJid: string; messageId: string; emoji: string },

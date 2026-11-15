@@ -184,6 +184,26 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
     }
   }
 
+  // Modification d'un de ses messages texte (règles vérifiées par le service).
+  @SubscribeMessage('wa:edit')
+  async onEdit(
+    @MessageBody()
+    input: { accountId?: string; chatJid: string; messageId: string; text: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.logger.log(`wa:edit ${input.chatJid}/${input.messageId}`);
+    try {
+      await this.wa.editMessage(
+        input.accountId ?? 'default',
+        input.chatJid,
+        input.messageId,
+        input.text ?? '',
+      );
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'edit_failed' };
+    }
+  }
+
   // Réaction emoji sur un message ('' = retrait). Ack pour signaler l'échec.
   @SubscribeMessage('wa:react')
   async onReact(

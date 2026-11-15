@@ -1979,3 +1979,17 @@ a.gallery__file:hover {
 .notifbar:hover {
   filter: brightness(0.97);
 }
+
+.composer__reply--edit {
+  border-left-color: var(--text-muted);
+}
+.composer__reply-error {
+  font-size: 12px;
+  color: var(--danger);
+}
+.bubble__edited {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-muted);
+  margin-right: 4px;
+}

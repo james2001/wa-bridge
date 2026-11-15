@@ -80,6 +80,30 @@ export function sendText(input: SendTextInput): Promise<SendTextAck> {
   });
 }
 
+// Modifie le texte d'un de ses messages. Refuse si le socket est coupé.
+export function editMessage(
+  accountId: string,
+  chatJid: string,
+  messageId: string,
+  text: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    const s = socket;
+    if (!s || !s.connected) {
+      reject(new Error('Socket non connecté'));
+      return;
+    }
+    s.timeout(20_000).emit(
+      'wa:edit',
+      { accountId, chatJid, messageId, text },
+      (err: Error | null, ack: { ok: boolean; error?: string }) => {
+        if (err) reject(err);
+        else resolve(ack);
+      },
+    );
+  });
+}
+
 // Réagit à un message ('' = retire sa réaction). Refuse si le socket est
 // coupé (pas de mise en file : une réaction n'est envoyée qu'au clic).
 export function reactToMessage(

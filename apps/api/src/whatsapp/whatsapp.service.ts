@@ -165,6 +165,8 @@ export class WhatsappService
   // Limite WhatsApp du nombre de discussions épinglées.
   static readonly MAX_PINNED = 3;
   private static readonly REACTION_TIMEOUT_MS = 15_000;
+  // Fenêtre de modification d'un message (règle WhatsApp).
+  static readonly EDIT_WINDOW_MS = 15 * 60 * 1000;
   private static readonly AVATAR_MAX_CONCURRENT = 3;
   // 24 h: une entrée "pas de photo" mise à tort (timeout) se répare en 1 jour.
   private static readonly AVATAR_NEG_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
@@ -1826,6 +1828,49 @@ export class WhatsappService
       },
       message: content,
     };
+  }
+
+  // Modifie le texte d'un de SES messages texte. Mêmes règles que WhatsApp :
+  // 15 min max après l'envoi. Tout est vérifié ici, côté serveur (propriété,
+  // type, délai), quel que soit ce que le front affiche.
+  async editMessage(
+    accountId = DEFAULT_ACCOUNT_ID,
+    chatJid: string,
+    messageId: string,
+    newText: string,
+  ): Promise<void> {
+    const s = this.ensureSession(accountId);
+    if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
+      throw new Error('WhatsApp non connecté');
+    }
+    const text = newText.trim();
+    if (!text) throw new Error('Texte vide');
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    const row = await this.prisma.waMessage
+      .findUnique({
+        where: { accountId_chatJid_id: { accountId, chatJid: jid, id: messageId } },
+        select: { id: true, fromMe: true, type: true, text: true, sentAt: true },
+      })
+      .catch(() => null);
+    if (!row) throw new Error('Message introuvable');
+    if (!row.fromMe) throw new Error('Seuls vos propres messages sont modifiables');
+    if (row.type !== WaMessageType.TEXT) {
+      throw new Error('Seuls les messages texte sont modifiables');
+    }
+    if (Date.now() - row.sentAt.getTime() > WhatsappService.EDIT_WINDOW_MS) {
+      throw new Error('Délai de modification dépassé (15 min)');
+    }
+    if (row.text === text) return; // rien à changer
+    await this.withTimeout(
+      s.sock.sendMessage(jid, {
+        text,
+        edit: { remoteJid: jid, id: row.id, fromMe: true },
+      }),
+      WhatsappService.REACTION_TIMEOUT_MS,
+    );
+    // Reflète tout de suite (l'écho WhatsApp refera la même chose).
+    await this.applyEdit(accountId, jid, row.id, text);
+    await this.refreshChatPreview(accountId, jid, true);
   }
 
   // Réagit (emoji) à un message, ou retire sa réaction (emoji = ''). Envoyé
@@ -3624,6 +3669,7 @@ export class WhatsappService
       media: unknown;
       reactions: unknown;
       clientId: string | null;
+      editedAt?: Date | null;
     },
   ): WaMessage {
     const dto: WaMessage = {
@@ -3641,6 +3687,7 @@ export class WhatsappService
       media: (row.media as WaMessage['media']) ?? null,
       reactions: (row.reactions as WaReaction[] | null) ?? [],
       clientId: row.clientId,
+      ...(row.editedAt ? { edited: true } : {}),
     };
     // URL backend du média (servie déchiffrée à la demande).
     this.attachMediaUrl(dto);

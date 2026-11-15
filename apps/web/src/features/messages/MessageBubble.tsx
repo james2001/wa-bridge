@@ -11,6 +11,9 @@ import { setComposerAction } from '../ui/uiSlice';
 // Chargé à la demande : la bibliothèque d'emojis pèse plusieurs centaines de Ko.
 const EmojiPanel = lazy(() => import('../../components/EmojiPanel'));
 
+// Délai de modification d'un message (règle WhatsApp, revérifiée côté serveur).
+const EDIT_WINDOW_MS = 15 * 60 * 1000;
+
 interface Props {
   message: WaMessage;
   // Message cité résolu (réponse). null = quotedId présent mais introuvable.
@@ -187,6 +190,13 @@ export default function MessageBubble({
     message.status !== WaMessageStatus.ERROR &&
     message.type !== WaMessageType.SYSTEM;
   const myReaction = message.reactions.find((r) => r.fromMe)?.emoji ?? null;
+  // Modifiable : son propre message texte envoyé il y a moins de 15 min
+  // (le serveur revérifie tout).
+  const canEdit =
+    canReact &&
+    isOwn &&
+    message.type === WaMessageType.TEXT &&
+    Date.now() - message.timestamp < EDIT_WINDOW_MS;
   const onReact = (emoji: string) => {
     setPickerOpen(false);
     // Re-choisir sa réaction actuelle la retire (comme WhatsApp).
@@ -232,6 +242,25 @@ export default function MessageBubble({
           >
             ↩
           </button>
+          {canEdit && (
+            <button
+              type="button"
+              className="react-trigger"
+              title="Modifier"
+              aria-label="Modifier ce message"
+              onClick={() =>
+                dispatch(
+                  setComposerAction({
+                    kind: 'edit',
+                    chatJid: message.chatJid,
+                    message,
+                  }),
+                )
+              }
+            >
+              ✎
+            </button>
+          )}
           {pickerOpen && (
             <Suspense fallback={null}>
               <EmojiPanel
@@ -285,6 +314,7 @@ export default function MessageBubble({
           <span className="bubble__body">{message.text}</span>
         )}
         <span className="bubble__meta">
+          {message.edited && <span className="bubble__edited">modifié</span>}
           <span className="bubble__time">{formatTime(message.timestamp)}</span>
           {isOwn && (
             <span

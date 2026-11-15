@@ -3,7 +3,7 @@ import { WaMessageStatus, WaMessageType } from '@app/shared-types';
 import type { WaAccount, WaMessage } from '@app/shared-types';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { selectComposerAction, setComposerAction } from '../ui/uiSlice';
-import { sendText, setTyping } from '../../services/socket';
+import { editMessage, sendText, setTyping } from '../../services/socket';
 import { http } from '../../services/http';
 import { upsertMessage } from './messagesApi';
 import { upsertPersonMessage } from '../people/peopleApi';
@@ -60,7 +60,30 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
     action?.kind === 'reply' && action.chatJid === chatJid
       ? action.message
       : null;
-  const cancelAction = () => dispatch(setComposerAction(null));
+  // Modification en cours d'un de ses messages (CETTE discussion).
+  const editing =
+    action?.kind === 'edit' && action.chatJid === chatJid
+      ? action.message
+      : null;
+  const [actionError, setActionError] = useState<string | null>(null);
+  const cancelAction = () => {
+    if (editing) setText('');
+    setActionError(null);
+    dispatch(setComposerAction(null));
+  };
+
+  // Entrée en modification : le texte du message revient dans la saisie.
+  useEffect(() => {
+    if (!editing) return;
+    setActionError(null);
+    setText(editing.text ?? '');
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  }, [editing]);
 
   // Répondre : le curseur va dans la saisie ; en vue fusionnée, la réponse
   // part du compte qui a reçu le message cité (sinon citation introuvable).
@@ -151,6 +174,33 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
     const value = text.trim();
     if (!value) return;
 
+    // Mode modification : on remplace le texte d'un message existant, on
+    // n'envoie PAS de nouveau message.
+    if (editing) {
+      stopTyping();
+      setSending(true);
+      setActionError(null);
+      try {
+        const ack = await editMessage(
+          editing.accountId,
+          editing.chatJid,
+          editing.id,
+          value,
+        );
+        if (ack.ok) {
+          setText('');
+          dispatch(setComposerAction(null));
+        } else {
+          setActionError(ack.error ?? 'Échec de la modification');
+        }
+      } catch {
+        setActionError('WhatsApp injoignable, modification non faite');
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+
     stopTyping();
     const clientId = crypto.randomUUID();
     const quotedId = replyTo?.id ?? null;
@@ -236,6 +286,7 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
     }
   };
 
+  const editLabel = editing ? (editing.text ?? '') : '';
   const replyLabel = replyTo
     ? replyTo.fromMe
       ? 'Vous'
@@ -247,6 +298,26 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
 
   return (
     <div className="composer-wrap">
+      {editing && (
+        <div className="composer__reply composer__reply--edit" role="status">
+          <div className="composer__reply-body">
+            <span className="composer__reply-who">Modifier le message</span>
+            <span className="composer__reply-text">{editLabel}</span>
+            {actionError && (
+              <span className="composer__reply-error">{actionError}</span>
+            )}
+          </div>
+          <button
+            type="button"
+            className="iconbtn composer__reply-cancel"
+            title="Annuler la modification"
+            aria-label="Annuler la modification"
+            onClick={cancelAction}
+          >
+            ✕
+          </button>
+        </div>
+      )}
       {replyTo && (
         <div className="composer__reply" role="status">
           <div className="composer__reply-body">
@@ -314,7 +385,7 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
         className="composer__attach"
         type="button"
         onClick={onPickFile}
-        disabled={uploading}
+        disabled={uploading || Boolean(editing)}
         title="Joindre un fichier"
         aria-label="Joindre un fichier"
       >
@@ -329,7 +400,7 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
         value={text}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Escape' && replyTo) {
+          if (e.key === 'Escape' && (replyTo || editing)) {
             cancelAction();
             return;
           }
