@@ -2,6 +2,7 @@ import { lazy, Suspense, useState } from 'react';
 import { WaMessageStatus, WaMessageType } from '@app/shared-types';
 import type { WaMessage, WaReaction } from '@app/shared-types';
 import { formatTime } from '../../lib/format';
+import { formatWhatsappText } from '../../lib/formatText';
 import MediaContent from './MediaContent';
 import MessageInfoModal from './MessageInfoModal';
 import DeleteMessageModal from './DeleteMessageModal';
@@ -336,7 +337,9 @@ export default function MessageBubble({
         {/* La légende du média est rendue par MediaContent: on n'affiche le
             corps texte ici que pour les messages sans média. */}
         {!hasMedia && message.text && (
-          <span className="bubble__body">{message.text}</span>
+          <span className="bubble__body">
+            {formatWhatsappText(message.text)}
+          </span>
         )}
         <span className="bubble__meta">
           {message.edited && <span className="bubble__edited">modifié</span>}

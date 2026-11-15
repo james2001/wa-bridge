@@ -2036,3 +2036,28 @@ a.gallery__file:hover {
   opacity: 0.5;
   cursor: default;
 }
+
+/* ---------- Mise en forme WhatsApp ---------- */
+.bubble__body a,
+.media-caption a {
+  color: #53bdeb;
+  word-break: break-all;
+}
+.fmt-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--tint-strong);
+}
+.fmt-pre {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.convitem__draft {
+  color: var(--green-dark);
+  font-weight: 600;
+}

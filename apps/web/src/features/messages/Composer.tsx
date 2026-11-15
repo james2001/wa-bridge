@@ -7,6 +7,7 @@ import { editMessage, sendText, setTyping } from '../../services/socket';
 import { http } from '../../services/http';
 import { upsertMessage } from './messagesApi';
 import { upsertPersonMessage } from '../people/peopleApi';
+import { draftKey, getDraft, setDraft } from '../../lib/drafts';
 
 const EmojiPanel = lazy(() => import('../../components/EmojiPanel'));
 
@@ -44,7 +45,9 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
   // Compte émetteur : en fusionné, choisi par l'utilisateur (défaut = accountId,
   // càd le compte le plus récent de la personne).
   const [sender, setSender] = useState(accountId);
-  const [text, setText] = useState('');
+  // Brouillon par discussion : repris à l'ouverture, gardé à chaque frappe.
+  const dKey = draftKey(merged ? 'merged' : accountId, chatJid);
+  const [text, setText] = useState(() => getDraft(dKey));
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState(false);
@@ -67,7 +70,8 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
       : null;
   const [actionError, setActionError] = useState<string | null>(null);
   const cancelAction = () => {
-    if (editing) setText('');
+    // Fin de modification : on retrouve le brouillon d'avant.
+    if (editing) setText(getDraft(dKey));
     setActionError(null);
     dispatch(setComposerAction(null));
   };
@@ -138,6 +142,11 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
     if (merged) dispatch(upsertPersonMessage(msg));
   };
 
+  // Le texte en cours de modification d'un message n'est pas un brouillon.
+  useEffect(() => {
+    if (!editing) setDraft(dKey, text);
+  }, [text, editing, dKey]);
+
   // Hauteur du champ ajustée au contenu (plafonnée en CSS par max-height).
   useEffect(() => {
     const el = inputRef.current;
@@ -188,7 +197,7 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
           value,
         );
         if (ack.ok) {
-          setText('');
+          setText(getDraft(dKey));
           dispatch(setComposerAction(null));
         } else {
           setActionError(ack.error ?? 'Échec de la modification');

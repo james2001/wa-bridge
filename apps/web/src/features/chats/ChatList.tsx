@@ -23,6 +23,7 @@ import ViewModeToggle from '../whatsapp/ViewModeToggle';
 import { useLogoutMutation } from '../auth/authApi';
 import ThemeToggle from '../ui/ThemeToggle';
 import NewChatModal from './NewChatModal';
+import { draftKey, useDrafts } from '../../lib/drafts';
 import {
   notificationPermission,
   requestNotificationPermission,
@@ -60,6 +61,7 @@ export default function ChatList() {
   const [filter, setFilter] = useState<ChatFilter>('all');
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [showNewChat, setShowNewChat] = useState(false);
+  const drafts = useDrafts();
   // Autorisation des notifications du navigateur (demandée sur clic).
   const [notifPerm, setNotifPerm] = useState(notificationPermission);
   const [relinkAccount, setRelinkAccount] = useState<WaAccount | null>(null);
@@ -207,7 +209,15 @@ export default function ChatList() {
           </div>
           <div className="convitem__bottom">
             <span className="convitem__preview">
-              {c.lastMessagePreview ?? ''}
+              {drafts[draftKey(c.accountId, c.jid)] &&
+              c.jid !== selectedJid ? (
+                <>
+                  <span className="convitem__draft">Brouillon :</span>{' '}
+                  {drafts[draftKey(c.accountId, c.jid)]}
+                </>
+              ) : (
+                (c.lastMessagePreview ?? '')
+              )}
             </span>
             {c.pinned && (
               <span className="convitem__pin" title="Épinglée">
