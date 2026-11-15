@@ -8,6 +8,7 @@ import type {
   WaMediaItem,
   WaContactAbout,
   WaContactEntry,
+  WaMessage,
   WaContactsResponse,
 } from '@app/shared-types';
 
@@ -55,6 +56,19 @@ export const chatsApi = api.injectEndpoints({
         { type: 'WaCommunities' as const, id: accountId },
       ],
     }),
+    // Recherche dans les messages (compte entier ou une discussion).
+    searchMessages: builder.query<
+      WaMessage[],
+      { accountId: string; q: string; chatJid?: string }
+    >({
+      query: ({ accountId, q, chatJid }) => ({
+        url: '/wa/search',
+        params: { accountId, q, ...(chatJid ? { chatJid } : {}) },
+      }),
+      transformResponse: (response: { messages: WaMessage[] }) =>
+        response.messages,
+      keepUnusedDataFor: 30,
+    }),
     // Carnet du compte (« Nouvelle discussion »), clé de cache = accountId.
     getContacts: builder.query<WaContactEntry[], string>({
       query: (accountId) => ({ url: '/wa/contacts', params: { accountId } }),
@@ -66,6 +80,7 @@ export const chatsApi = api.injectEndpoints({
 
 export const {
   useGetContactsQuery,
+  useSearchMessagesQuery,
   useGetChatsQuery,
   useGetChatMediaQuery,
   useGetContactAboutQuery,

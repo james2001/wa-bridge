@@ -222,7 +222,10 @@ export default function MessageBubble({
   };
 
   return (
-    <div className={'bubblerow' + (isOwn ? ' bubblerow--own' : '')}>
+    <div
+      className={'bubblerow' + (isOwn ? ' bubblerow--own' : '')}
+      data-msg-id={message.id}
+    >
       {canAct && (
         <div className="bubblerow__react">
           {canReact && (

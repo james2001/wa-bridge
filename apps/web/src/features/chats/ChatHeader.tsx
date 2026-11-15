@@ -15,6 +15,7 @@ interface Props {
   chat: WaChat | undefined;
   jid: string;
   accountId: string;
+  onSearch?: () => void;
 }
 
 function presenceText(p: WaPresence | undefined): string | null {
@@ -31,7 +32,7 @@ function presenceText(p: WaPresence | undefined): string | null {
   }
 }
 
-export default function ChatHeader({ chat, jid, accountId }: Props) {
+export default function ChatHeader({ chat, jid, accountId, onSearch }: Props) {
   const dispatch = useAppDispatch();
   const presence = useAppSelector(selectPresence(accountId, jid));
   const infoOpen = useAppSelector(selectInfoPanelOpen);
@@ -75,6 +76,17 @@ export default function ChatHeader({ chat, jid, accountId }: Props) {
         </div>
       </button>
       <div className="chathdr__actions">
+        {onSearch && (
+          <button
+            type="button"
+            className="iconbtn"
+            title="Rechercher dans la discussion"
+            aria-label="Rechercher dans la discussion"
+            onClick={onSearch}
+          >
+            🔍
+          </button>
+        )}
         <button
           className="iconbtn"
           title="Infos du contact"

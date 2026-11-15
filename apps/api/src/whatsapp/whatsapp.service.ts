@@ -2904,11 +2904,21 @@ export class WhatsappService
     accountId = DEFAULT_ACCOUNT_ID,
     q: string,
     limit: number,
+    chatJid?: string,
   ): Promise<WaMessage[]> {
     if (!q.trim()) return [];
     const take = Math.min(Math.max(limit, 1), 50);
+    const jid = chatJid
+      ? ((await this.resolvePn(accountId, chatJid)) ?? chatJid)
+      : undefined;
     const rows = await this.prisma.waMessage.findMany({
-      where: { accountId, text: { contains: q, mode: 'insensitive' } },
+      where: {
+        accountId,
+        ...(jid ? { chatJid: jid } : {}),
+        // Les placeholders « message supprimé » ne sont pas des résultats.
+        type: { not: WaMessageType.SYSTEM },
+        text: { contains: q.trim(), mode: 'insensitive' },
+      },
       orderBy: { sentAt: 'desc' },
       take,
     });

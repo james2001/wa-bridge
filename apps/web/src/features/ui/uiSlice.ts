@@ -31,6 +31,8 @@ interface UiState {
   // Personne sélectionnée en mode 'merged' (JID pn transverse aux comptes).
   selectedPersonId: string | null;
   composerAction: ComposerAction | null;
+  // Message à afficher (résultat de recherche) : la liste y défile.
+  focusMessage: { chatJid: string; id: string } | null;
 }
 
 const initialState: UiState = {
@@ -40,6 +42,7 @@ const initialState: UiState = {
   viewMode: 'account',
   selectedPersonId: null,
   composerAction: null,
+  focusMessage: null,
 };
 
 const uiSlice = createSlice({
@@ -80,6 +83,12 @@ const uiSlice = createSlice({
     setComposerAction(state, action: PayloadAction<ComposerAction | null>) {
       state.composerAction = action.payload;
     },
+    setFocusMessage(
+      state,
+      action: PayloadAction<{ chatJid: string; id: string } | null>,
+    ) {
+      state.focusMessage = action.payload;
+    },
     openInfoPanel(state) {
       state.infoPanelOpen = true;
     },
@@ -105,6 +114,7 @@ export const {
   closeInfoPanel,
   toggleInfoPanel,
   setComposerAction,
+  setFocusMessage,
 } = uiSlice.actions;
 
 export default uiSlice.reducer;
@@ -121,3 +131,6 @@ export const selectSelectedPersonId = (state: RootState): string | null =>
   state.ui.selectedPersonId;
 export const selectComposerAction = (state: RootState): ComposerAction | null =>
   state.ui.composerAction;
+export const selectFocusMessage = (
+  state: RootState,
+): { chatJid: string; id: string } | null => state.ui.focusMessage;

@@ -24,6 +24,10 @@ import { useLogoutMutation } from '../auth/authApi';
 import ThemeToggle from '../ui/ThemeToggle';
 import NewChatModal from './NewChatModal';
 import ChatItemMenu from './ChatItemMenu';
+import SearchResults from '../search/SearchResults';
+import { useDebounced } from '../../hooks/useDebounced';
+import { useSearchMessagesQuery } from './chatsApi';
+import { setFocusMessage } from '../ui/uiSlice';
 import { draftKey, useDrafts } from '../../lib/drafts';
 import {
   notificationPermission,
@@ -121,6 +125,12 @@ export default function ChatList() {
   );
 
   const q = query.trim().toLowerCase();
+  // Recherche aussi DANS les messages (à partir de 3 caractères).
+  const msgQ = useDebounced(query.trim(), 300);
+  const { data: msgResults, isFetching: msgFetching } = useSearchMessagesQuery(
+    { accountId: activeAccountId, q: msgQ },
+    { skip: msgQ.length < 3 },
+  );
 
   // Liste principale: filtre d'onglet + recherche (titre ou numéro).
   const visibleActive = useMemo(
@@ -415,6 +425,23 @@ export default function ChatList() {
         {filter === 'groups'
           ? renderGroupsGrouped(visibleActive)
           : visibleActive.map(renderItem)}
+
+        {msgQ.length >= 3 && q.length >= 3 && (
+          <div className="search">
+            <h3 className="search__section">Messages</h3>
+            <SearchResults
+              messages={msgResults}
+              isFetching={msgFetching}
+              query={msgQ}
+              chats={chats}
+              onPick={(m) => {
+                setQuery('');
+                dispatch(selectChat(m.chatJid));
+                dispatch(setFocusMessage({ chatJid: m.chatJid, id: m.id }));
+              }}
+            />
+          </div>
+        )}
 
         {!isLoading &&
           !isError &&

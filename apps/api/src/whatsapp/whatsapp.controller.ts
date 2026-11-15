@@ -54,6 +54,19 @@ export class WhatsappController {
     return { chats: await this.wa.listChats(accountId) };
   }
 
+  // Recherche dans les messages (tout le compte, ou une discussion).
+  @Get('search')
+  async search(
+    @Query('accountId') accountId = 'default',
+    @Query('q') q = '',
+    @Query('chatJid') chatJid?: string,
+  ): Promise<{ messages: WaMessage[] }> {
+    if (q.trim().length < 2) return { messages: [] };
+    return {
+      messages: await this.wa.searchMessages(accountId, q, 50, chatJid || undefined),
+    };
+  }
+
   // Carnet du compte pour « Nouvelle discussion » (lecture seule).
   @Get('contacts')
   async contacts(

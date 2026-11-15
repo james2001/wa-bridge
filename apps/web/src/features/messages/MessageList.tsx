@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useAppDispatch, useAppSelector } from '../../app/hooks';
+import { selectFocusMessage, setFocusMessage } from '../ui/uiSlice';
 import type { WaMessage } from '@app/shared-types';
 import { markRead } from '../../services/socket';
 import { useGetMessagesQuery } from './messagesApi';
@@ -53,7 +55,49 @@ export default function MessageList({ jid, accountId }: Props) {
     if (lastIncomingId) markRead(accountId, jid);
   }, [accountId, jid, lastIncomingId]);
 
+  // Aller à un message (résultat de recherche) : défile jusqu'à lui et le
+  // met en évidence ; s'il est plus ancien, charge les pages précédentes
+  // (lecture seule) jusqu'à le trouver, dans la limite de MAX_PAGES.
+  const dispatch = useAppDispatch();
+  const focus = useAppSelector(selectFocusMessage);
+  const pagesLoaded = useRef(0);
+  const [focusMissed, setFocusMissed] = useState(false);
+  useEffect(() => {
+    if (!focus || focus.chatJid !== jid) return;
+    const el = document.querySelector<HTMLElement>(
+      `[data-msg-id="${CSS.escape(focus.id)}"]`,
+    );
+    if (el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el.classList.add('bubblerow--flash');
+      setTimeout(() => el.classList.remove('bubblerow--flash'), 2500);
+      pagesLoaded.current = 0;
+      setFocusMissed(false);
+      dispatch(setFocusMessage(null));
+      return;
+    }
+    if (isFetching) return;
+    if (hasMore && nextBefore != null && pagesLoaded.current < MAX_PAGES) {
+      pagesLoaded.current += 1;
+      setBefore(nextBefore);
+      return;
+    }
+    pagesLoaded.current = 0;
+    setFocusMissed(true);
+    dispatch(setFocusMessage(null));
+  }, [focus, jid, messages, isFetching, hasMore, nextBefore, dispatch]);
+
   return (
+    <>
+    {focusMissed && (
+      <button
+        type="button"
+        className="msglist__missed"
+        onClick={() => setFocusMissed(false)}
+      >
+        Message trop ancien pour être affiché ici — remontez la conversation. ✕
+      </button>
+    )}
     <MessageScroller
       resetKey={jid}
       messages={messages}
@@ -74,5 +118,9 @@ export default function MessageList({ jid, accountId }: Props) {
         />
       )}
     />
+    </>
   );
 }
+
+// Pages plus anciennes chargées au plus pour retrouver un message cherché.
+const MAX_PAGES = 15;
