@@ -162,6 +162,7 @@ export class WhatsappService
   private static readonly LOCAL_META_GUARD_MS = 20_000;
   // Limite WhatsApp du nombre de discussions épinglées.
   static readonly MAX_PINNED = 3;
+  private static readonly REACTION_TIMEOUT_MS = 15_000;
   private static readonly AVATAR_MAX_CONCURRENT = 3;
   // 24 h: une entrée "pas de photo" mise à tort (timeout) se répare en 1 jour.
   private static readonly AVATAR_NEG_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
@@ -218,6 +219,9 @@ export class WhatsappService
       .catch((e) => this.logger.warn(`seed compte default: ${e}`));
     await this.loadLidMap(DEFAULT_ACCOUNT_ID);
     await this.loadContactNames(DEFAULT_ACCOUNT_ID);
+    // Recale les aperçus sur le vrai dernier message (réparation idempotente,
+    // en tâche de fond : ne retarde pas la connexion).
+    void this.repairChatPreviews(DEFAULT_ACCOUNT_ID);
     await this.connect(DEFAULT_ACCOUNT_ID);
 
     // Reconnecte les comptes secondaires déjà liés (hors 'default', déjà lancé,
@@ -231,6 +235,7 @@ export class WhatsappService
       }
       await this.loadLidMap(acc.id);
       await this.loadContactNames(acc.id);
+      void this.repairChatPreviews(acc.id);
       void this.connect(acc.id);
     }
 
@@ -952,12 +957,15 @@ export class WhatsappService
 
       if (protocol.type === Type.REVOKE) {
         await this.applyRevoke(accountId, chatJid, targetId);
+        await this.refreshChatPreview(accountId, chatJid, true);
         return true;
       }
       if (protocol.type === Type.MESSAGE_EDIT) {
         const newText = this.extractEditedText(protocol.editedMessage);
-        if (newText !== null)
+        if (newText !== null) {
           await this.applyEdit(accountId, chatJid, targetId, newText);
+          await this.refreshChatPreview(accountId, chatJid, true);
+        }
         // Consommé même si le texte n'a pu être extrait (pas de bulle de contrôle).
         return true;
       }
@@ -1280,6 +1288,11 @@ export class WhatsappService
       await this.prisma.waMessage
         .createMany({ data: rows.slice(i, i + 500), skipDuplicates: true })
         .catch(() => undefined);
+    }
+    // L'historique pose la date des discussions mais pas leur aperçu : on le
+    // recale sur le dernier message réellement stocké.
+    for (const chatJid of new Set(rows.map((r) => r.chatJid))) {
+      await this.refreshChatPreview(accountId, chatJid);
     }
 
     const chats = await this.listChats(accountId);
@@ -1751,6 +1764,56 @@ export class WhatsappService
     this.emit('message', accountId, msg);
     if (chat) this.emit('chat-upsert', accountId, chat);
     return msg;
+  }
+
+  // Réagit (emoji) à un message, ou retire sa réaction (emoji = ''). Envoyé
+  // UNIQUEMENT sur clic explicite de l'utilisateur (socket 'wa:react').
+  async sendReaction(
+    accountId = DEFAULT_ACCOUNT_ID,
+    chatJid: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<void> {
+    const s = this.ensureSession(accountId);
+    if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
+      throw new Error('WhatsApp non connecté');
+    }
+    const text = emoji.trim();
+    // Une réaction = un seul emoji (ou '' pour retirer) : jamais du texte libre.
+    // Hors liants (ZWJ, VS16) : seulement pictogrammes, drapeaux, teintes de
+    // peau et tags. Rien d'autre.
+    const core = text.replace(/\u200d|\ufe0f/gu, '');
+    const isEmoji =
+      /^[\p{Extended_Pictographic}\p{Regional_Indicator}\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}]+$/u.test(
+        core,
+      ) &&
+      /[\p{Extended_Pictographic}\p{Regional_Indicator}]/u.test(core) &&
+      [...text].length <= 12;
+    if (text !== '' && !isEmoji) throw new Error('Réaction invalide');
+    const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    const target = await this.prisma.waMessage
+      .findUnique({
+        where: { accountId_chatJid_id: { accountId, chatJid: jid, id: messageId } },
+        select: { id: true, fromMe: true, senderJid: true },
+      })
+      .catch(() => null);
+    if (!target) throw new Error('Message introuvable');
+    const key = {
+      remoteJid: jid,
+      id: target.id,
+      fromMe: target.fromMe,
+      // En groupe, la cible est identifiée par son auteur.
+      ...(isJidGroup(jid) && !target.fromMe && target.senderJid
+        ? { participant: target.senderJid }
+        : {}),
+    };
+    const sent = await this.withTimeout(
+      s.sock.sendMessage(jid, { react: { text, key } }),
+      WhatsappService.REACTION_TIMEOUT_MS,
+    );
+    // Reflète tout de suite (l'écho messages.upsert fera la même chose,
+    // handleReaction est idempotent).
+    if (sent) await this.handleReaction(accountId, sent);
   }
 
   // Envoi d'un média (image/vidéo/audio/document) depuis le pont vers WhatsApp.
@@ -3000,11 +3063,24 @@ export class WhatsappService
     incrementUnread = false,
   ): Promise<WaChat | null> {
     const name = await this.nameFor(accountId, m.chatJid);
-    const at = new Date(m.timestamp || Date.now());
-    const preview = previewOf({
-      ...m,
-      text: this.resolveMentions(accountId, m.text),
-    });
+    // L'aperçu reflète le DERNIER message stocké, pas celui qu'on traite : un
+    // message plus ancien livré en retard (reconnexion, synchro) ne doit pas
+    // écraser l'aperçu ni reculer la date. m est déjà persisté par l'appelant.
+    const latest = await this.latestMessageOf(accountId, m.chatJid);
+    const msgAt = new Date(m.timestamp || Date.now());
+    const preview = latest
+      ? latest.preview
+      : previewOf({ ...m, text: this.resolveMentions(accountId, m.text) });
+    const existing = await this.prisma.waChat
+      .findUnique({
+        where: { accountId_jid: { accountId, jid: m.chatJid } },
+        select: { lastMessageAt: true },
+      })
+      .catch(() => null);
+    let at = latest?.at ?? msgAt;
+    if (existing?.lastMessageAt && existing.lastMessageAt > at) {
+      at = existing.lastMessageAt;
+    }
     const row = await this.prisma.waChat
       .upsert({
         where: { accountId_jid: { accountId, jid: m.chatJid } },
@@ -3026,6 +3102,80 @@ export class WhatsappService
       })
       .catch(() => null);
     return row ? this.chatRowToDto(accountId, row) : null;
+  }
+
+  // Dernier message stocké d'une discussion et son aperçu (mentions résolues).
+  private async latestMessageOf(
+    accountId: string,
+    chatJid: string,
+  ): Promise<{ at: Date; preview: string | null } | null> {
+    const last = await this.prisma.waMessage
+      .findFirst({
+        where: { accountId, chatJid },
+        orderBy: { sentAt: 'desc' },
+      })
+      .catch(() => null);
+    if (!last) return null;
+    const dto = this.msgRowToDto(accountId, last);
+    return {
+      at: last.sentAt,
+      preview: previewOf({
+        ...dto,
+        text: this.resolveMentions(accountId, dto.text),
+      }),
+    };
+  }
+
+  // Recale aperçu + date d'une discussion existante sur son dernier message
+  // stocké. La date ne recule jamais (l'historique peut connaître un échange
+  // plus récent que ce qui est en base). emit = notifier le front.
+  private async refreshChatPreview(
+    accountId: string,
+    chatJid: string,
+    emit = false,
+  ): Promise<void> {
+    const latest = await this.latestMessageOf(accountId, chatJid);
+    if (!latest) return;
+    const cur = await this.prisma.waChat
+      .findUnique({
+        where: { accountId_jid: { accountId, jid: chatJid } },
+        select: { lastMessageAt: true, lastMessagePreview: true },
+      })
+      .catch(() => null);
+    if (!cur) return;
+    const at =
+      cur.lastMessageAt && cur.lastMessageAt > latest.at
+        ? cur.lastMessageAt
+        : latest.at;
+    if (
+      cur.lastMessagePreview === latest.preview &&
+      cur.lastMessageAt?.getTime() === at.getTime()
+    ) {
+      return; // déjà juste
+    }
+    const row = await this.prisma.waChat
+      .update({
+        where: { accountId_jid: { accountId, jid: chatJid } },
+        data: { lastMessageAt: at, lastMessagePreview: latest.preview },
+      })
+      .catch(() => null);
+    if (row && emit) {
+      this.emit('chat-upsert', accountId, this.chatRowToDto(accountId, row));
+    }
+  }
+
+  // Passe sur toutes les discussions ayant des messages (au démarrage).
+  private async repairChatPreviews(accountId: string): Promise<void> {
+    try {
+      const groups = await this.prisma.waMessage.groupBy({
+        by: ['chatJid'],
+        where: { accountId },
+      });
+      for (const g of groups) await this.refreshChatPreview(accountId, g.chatJid);
+      this.logger.log(`aperçus recalés (${groups.length} discussions) [${accountId}]`);
+    } catch (e) {
+      this.logger.warn(`repairChatPreviews: ${e}`);
+    }
   }
 
   private async nameFor(accountId: string, jid: string): Promise<string | null> {

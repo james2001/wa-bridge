@@ -182,6 +182,26 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
     }
   }
 
+  // Réaction emoji sur un message ('' = retrait). Ack pour signaler l'échec.
+  @SubscribeMessage('wa:react')
+  async onReact(
+    @MessageBody()
+    input: { accountId?: string; chatJid: string; messageId: string; emoji: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    this.logger.log(`wa:react ${input.chatJid}/${input.messageId} -> ${input.emoji || '(retrait)'}`);
+    try {
+      await this.wa.sendReaction(
+        input.accountId ?? 'default',
+        input.chatJid,
+        input.messageId,
+        input.emoji ?? '',
+      );
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'react_failed' };
+    }
+  }
+
   @SubscribeMessage('wa:mark-read')
   async onMarkRead(
     @MessageBody() input: { accountId?: string; chatJid: string },

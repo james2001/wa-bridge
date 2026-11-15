@@ -1774,3 +1774,71 @@ a.gallery__file:hover {
   flex-shrink: 0;
   font-size: 13px;
 }
+
+/* ---------- Réactions & sélecteur d'emojis ---------- */
+.bubblerow {
+  align-items: center;
+  gap: 4px;
+}
+.bubblerow__react {
+  position: relative;
+  order: 1; /* message reçu : bouton à droite de la bulle */
+}
+.bubblerow--own .bubblerow__react {
+  order: 0; /* message envoyé : à gauche */
+}
+.react-trigger {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: var(--tint-strong);
+  color: var(--text-muted);
+  font-size: 17px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.bubblerow:hover .react-trigger,
+.react-trigger:focus-visible,
+.react-trigger[aria-expanded='true'] {
+  opacity: 1;
+}
+/* Écran tactile : pas de survol, bouton toujours discret mais visible. */
+@media (hover: none) {
+  .react-trigger {
+    opacity: 0.5;
+  }
+}
+.bubble__react-error {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--danger);
+}
+.emojipanel {
+  position: absolute;
+  z-index: 40;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+}
+.emojipanel--react {
+  bottom: 34px;
+  left: 0;
+}
+.bubblerow--own .emojipanel--react {
+  left: auto;
+  right: 0;
+}
+.composer__emoji {
+  position: relative;
+}
+.emojipanel--composer {
+  bottom: 52px;
+  left: 0;
+}
+@media (max-width: 420px) {
+  .emojipanel--composer {
+    left: -8px;
+  }
+}

@@ -61,6 +61,12 @@ export interface ClientToServerEvents {
   // Coupe / réactive les notifications d'une discussion (mute).
   'wa:mute': (input: { accountId?: string; chatJid: string; muted: boolean }) => void;
 
+  // Réagit à un message avec un emoji ('' = retire sa réaction).
+  'wa:react': (
+    input: { accountId?: string; chatJid: string; messageId: string; emoji: string },
+    ack: (res: { ok: boolean; error?: string }) => void,
+  ) => void;
+
   // Épingle / désépingle une discussion (3 au plus par compte, comme WhatsApp).
   'wa:pin': (input: { accountId?: string; chatJid: string; pinned: boolean }) => void;
 

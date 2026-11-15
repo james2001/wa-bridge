@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { WaMessageStatus, WaMessageType } from '@app/shared-types';
 import type { WaAccount, WaMessage } from '@app/shared-types';
 import { useAppDispatch } from '../../app/hooks';
@@ -6,6 +6,27 @@ import { sendText, setTyping } from '../../services/socket';
 import { http } from '../../services/http';
 import { upsertMessage } from './messagesApi';
 import { upsertPersonMessage } from '../people/peopleApi';
+
+const EmojiPanel = lazy(() => import('../../components/EmojiPanel'));
+
+// Trombone (icône vectorielle : l'emoji 📎 varie trop selon les systèmes).
+function PaperclipIcon() {
+  return (
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+    </svg>
+  );
+}
 
 interface Props {
   chatJid: string;
@@ -30,6 +51,22 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
   const typingTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+
+  // Insère l'emoji à la position du curseur (ou remplace la sélection). Ne
+  // fait qu'éditer le champ : l'envoi reste sur Entrée / bouton ➤.
+  const insertEmoji = (emoji: string) => {
+    const el = inputRef.current;
+    const start = el?.selectionStart ?? text.length;
+    const end = el?.selectionEnd ?? text.length;
+    onChange(text.slice(0, start) + emoji + text.slice(end));
+    requestAnimationFrame(() => {
+      if (!el) return;
+      el.focus();
+      const pos = start + emoji.length;
+      el.setSelectionRange(pos, pos);
+    });
+  };
 
   // Ouvrir une discussion place le curseur dans la saisie, comme WhatsApp Web.
   // Pas sur écran tactile : le clavier virtuel masquerait la conversation.
@@ -194,14 +231,36 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
         accept="image/*,video/*,audio/*,application/*"
         onChange={onFileSelected}
       />
+      <div className="composer__emoji">
+        <button
+          className="composer__attach"
+          type="button"
+          onClick={() => setEmojiOpen((v) => !v)}
+          title="Emojis"
+          aria-label="Insérer un emoji"
+          aria-expanded={emojiOpen}
+        >
+          ☺
+        </button>
+        {emojiOpen && (
+          <Suspense fallback={null}>
+            <EmojiPanel
+              className="emojipanel--composer"
+              onPick={insertEmoji}
+              onClose={() => setEmojiOpen(false)}
+            />
+          </Suspense>
+        )}
+      </div>
       <button
         className="composer__attach"
         type="button"
         onClick={onPickFile}
         disabled={uploading}
         title="Joindre un fichier"
+        aria-label="Joindre un fichier"
       >
-        📎
+        <PaperclipIcon />
       </button>
       <input
         ref={inputRef}

@@ -1,9 +1,13 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { WaMessageStatus, WaMessageType } from '@app/shared-types';
 import type { WaMessage, WaReaction } from '@app/shared-types';
 import { formatTime } from '../../lib/format';
 import MediaContent from './MediaContent';
 import MessageInfoModal from './MessageInfoModal';
+import { reactToMessage } from '../../services/socket';
+
+// Chargé à la demande : la bibliothèque d'emojis pèse plusieurs centaines de Ko.
+const EmojiPanel = lazy(() => import('../../components/EmojiPanel'));
 
 interface Props {
   message: WaMessage;
@@ -171,8 +175,55 @@ export default function MessageBubble({
     : '';
   const quoteText = quoted ? quotedPreview(quoted) : 'Message';
 
+  // Réactions : seulement sur un message réellement envoyé/reçu (pas l'écho
+  // optimistic en attente, ni un message en échec ou système).
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [reactError, setReactError] = useState<string | null>(null);
+  const canReact =
+    message.status !== WaMessageStatus.PENDING &&
+    message.status !== WaMessageStatus.ERROR &&
+    message.type !== WaMessageType.SYSTEM;
+  const myReaction = message.reactions.find((r) => r.fromMe)?.emoji ?? null;
+  const onReact = (emoji: string) => {
+    setPickerOpen(false);
+    // Re-choisir sa réaction actuelle la retire (comme WhatsApp).
+    const next = emoji === myReaction ? '' : emoji;
+    reactToMessage(message.accountId, message.chatJid, message.id, next)
+      .then((ack) => {
+        if (!ack.ok) setReactError(ack.error ?? 'Échec');
+      })
+      .catch(() => setReactError('WhatsApp injoignable'));
+  };
+
   return (
     <div className={'bubblerow' + (isOwn ? ' bubblerow--own' : '')}>
+      {canReact && (
+        <div className="bubblerow__react">
+          <button
+            type="button"
+            className="react-trigger"
+            title="Réagir"
+            aria-label="Réagir à ce message"
+            aria-expanded={pickerOpen}
+            onClick={() => {
+              setReactError(null);
+              setPickerOpen((v) => !v);
+            }}
+          >
+            ☺
+          </button>
+          {pickerOpen && (
+            <Suspense fallback={null}>
+              <EmojiPanel
+                reactions
+                className="emojipanel--react"
+                onPick={onReact}
+                onClose={() => setPickerOpen(false)}
+              />
+            </Suspense>
+          )}
+        </div>
+      )}
       <div
         className={
           'bubble' +
@@ -234,6 +285,11 @@ export default function MessageBubble({
             via {accountLabel}
           </span>
         )}
+        {reactError && (
+          <span className="bubble__react-error" role="alert">
+            Réaction non envoyée : {reactError}
+          </span>
+        )}
         {reactions.length > 0 && (
           <div className="bubble__reactions">
             {reactions.map((r) => (
@@ -242,6 +298,7 @@ export default function MessageBubble({
                 className={
                   'reaction-chip' + (r.fromMe ? ' reaction-chip--own' : '')
                 }
+                title={r.fromMe ? 'Votre réaction' : undefined}
               >
                 <span className="reaction-chip__emoji">{r.emoji}</span>
                 {r.count > 1 && (
