@@ -2698,9 +2698,13 @@ export class WhatsappService
     for (const r of rows) {
       const jid = this.canonicalJid(accountId, r.jid) ?? r.jid;
       if (!jid.endsWith('@s.whatsapp.net')) continue; // @lid sans numéro connu
-      const saved = cleanName(r.name);
+      // Un « nom » sans lettre (« +33∙∙∙∙∙84 », numéro brut) n'est pas un vrai
+      // nom de carnet : on lui préfère le pseudo s'il en a un.
+      const letter = (v: string | null) => v !== null && /\p{L}/u.test(v);
+      const rawSaved = cleanName(r.name);
       const push = cleanName(r.pushName);
-      const name = saved ?? push;
+      const saved = letter(rawSaved) ? rawSaved : null;
+      const name = saved ?? (letter(push) ? push : (rawSaved ?? push));
       if (!name) continue;
       const prev = byJid.get(jid);
       if (!prev || (saved && !prev.saved)) {
