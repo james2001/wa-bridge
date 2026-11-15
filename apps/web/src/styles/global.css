@@ -927,7 +927,7 @@ button {
 
 .composer {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 8px;
   padding: 10px 16px;
   background: var(--header);
@@ -935,13 +935,20 @@ button {
 }
 .composer__input {
   flex: 1;
-  padding: 11px 14px;
+  padding: 10px 14px;
   border: none;
   border-radius: 20px;
   font-size: 15px;
+  font-family: inherit;
+  line-height: 20px;
   outline: none;
   background: var(--input-bg);
   color: var(--text);
+  /* Multiligne : grandit avec le texte jusqu'à ~6 lignes, puis défile. */
+  resize: none;
+  min-height: 40px;
+  max-height: 140px;
+  overflow-y: auto;
 }
 .composer__send {
   border: none;

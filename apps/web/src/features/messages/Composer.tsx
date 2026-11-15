@@ -50,7 +50,7 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
   const typingRef = useRef(false);
   const typingTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
 
   // Insère l'emoji à la position du curseur (ou remplace la sélection). Ne
@@ -97,6 +97,14 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
     if (merged) dispatch(upsertPersonMessage(msg));
   };
 
+  // Hauteur du champ ajustée au contenu (plafonnée en CSS par max-height).
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [text]);
+
   const onChange = (value: string) => {
     setText(value);
     if (value.length > 0) {
@@ -118,8 +126,10 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
     setSender(id);
   };
 
-  const onSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const onSubmit = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    // Un envoi à la fois : jamais de double envoi pendant l'attente de l'ack.
+    if (sending) return;
     const value = text.trim();
     if (!value) return;
 
@@ -262,13 +272,25 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
       >
         <PaperclipIcon />
       </button>
-      <input
+      <textarea
         ref={inputRef}
         className="composer__input"
-        type="text"
+        rows={1}
         placeholder="Écrivez un message"
+        aria-label="Message"
         value={text}
         onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          // Entrée envoie, Maj+Entrée va à la ligne (comme WhatsApp Web).
+          // Ignoré pendant une composition IME et sur répétition de touche
+          // (Entrée maintenue) : une frappe = au plus un envoi.
+          if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) {
+            return;
+          }
+          e.preventDefault();
+          if (e.repeat) return;
+          void onSubmit();
+        }}
       />
       {uploading && <span className="composer__uploading">Envoi…</span>}
       {uploadError && (
