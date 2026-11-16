@@ -5,6 +5,7 @@ import { initials, formatChatTime } from '../../lib/format';
 import Avatar from '../../components/Avatar';
 import { useGetChatsQuery, useGetCommunitiesQuery } from './chatsApi';
 import { chatTitle, prettyJid } from './utils';
+import { isReadStatus, statusMark } from '../../lib/statusMark';
 import {
   selectActiveAccountId,
   selectChat,
@@ -236,7 +237,21 @@ export default function ChatList() {
                   {drafts[draftKey(c.accountId, c.jid)]}
                 </>
               ) : (
-                (c.lastMessagePreview ?? '')
+                <>
+                  {c.lastMessageFromMe && c.lastMessageStatus && (
+                    <span
+                      className={
+                        'convitem__check' +
+                        (isReadStatus(c.lastMessageStatus)
+                          ? ' convitem__check--read'
+                          : '')
+                      }
+                    >
+                      {statusMark(c.lastMessageStatus)}
+                    </span>
+                  )}
+                  {c.lastMessagePreview ?? ''}
+                </>
               )}
             </span>
             {c.pinned && (

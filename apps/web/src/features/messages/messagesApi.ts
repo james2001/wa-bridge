@@ -1,4 +1,5 @@
 import { api } from '../../app/api';
+import { statusRank } from '../../lib/statusMark';
 import type {
   WaMessage,
   WaMessageInfoResponse,
@@ -117,7 +118,8 @@ export function updateMessageStatus(
     { accountId, jid },
     (draft) => {
       const m = draft.messages.find((mm) => mm.id === id);
-      if (m) m.status = status;
+      // Jamais de recul (accusés dans le désordre).
+      if (m && statusRank(status) >= statusRank(m.status)) m.status = status;
     },
   );
 }

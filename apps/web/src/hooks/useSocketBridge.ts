@@ -15,7 +15,13 @@ import {
   setConnection,
   setPresence,
 } from '../features/whatsapp/waSlice';
-import { chatsApi, setChats, upsertChat } from '../features/chats/chatsApi';
+import {
+  chatsApi,
+  patchChatLastMessage,
+  setChats,
+  updateChatLastStatus,
+  upsertChat,
+} from '../features/chats/chatsApi';
 import { store } from '../app/store';
 import { notifyIncoming } from '../lib/notify';
 import {
@@ -111,6 +117,7 @@ export function useSocketBridge(): void {
         },
       });
       dispatch(upsertMessage(p.accountId, p.message.chatJid, p.message));
+      dispatch(patchChatLastMessage(p.accountId, p.message));
       // Vue fusionnée: patche la timeline de la personne (no-op si non observée).
       dispatch(upsertPersonMessage(p.message));
       // Reflète le nouveau dernier message / unread dans la liste du compte…
@@ -127,6 +134,7 @@ export function useSocketBridge(): void {
       status: WaMessageStatus;
     }) => {
       dispatch(updateMessageStatus(p.accountId, p.chatJid, p.id, p.status));
+      dispatch(updateChatLastStatus(p.accountId, p.chatJid, p.id, p.status));
       dispatch(
         updatePersonMessageStatus(p.accountId, p.chatJid, p.id, p.status),
       );
@@ -138,7 +146,13 @@ export function useSocketBridge(): void {
     }) => {
       dispatch(removeMessage(p.accountId, p.chatJid, p.id));
       dispatch(removePersonMessage(p.accountId, p.chatJid, p.id));
-      dispatch(api.util.invalidateTags([{ type: 'People', id: 'LIST' }]));
+      dispatch(
+        api.util.invalidateTags([
+          { type: 'People', id: 'LIST' },
+          // Le dernier message (aperçu, coches) a pu changer.
+          { type: 'WaChats', id: p.accountId },
+        ]),
+      );
     };
     const onReaction = (p: {
       accountId: string;

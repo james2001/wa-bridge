@@ -1,4 +1,5 @@
 import { api } from '../../app/api';
+import { statusRank } from '../../lib/statusMark';
 import type {
   WaChat,
   WaChatsResponse,
@@ -10,6 +11,7 @@ import type {
   WaContactEntry,
   WaGroupInfo,
   WaMessage,
+  WaMessageStatus,
   WaContactsResponse,
 } from '@app/shared-types';
 
@@ -114,8 +116,56 @@ export function setChats(accountId: string, chats: WaChat[]) {
 export function upsertChat(accountId: string, chat: WaChat) {
   return chatsApi.util.updateQueryData('getChats', accountId, (draft) => {
     const idx = draft.findIndex((c) => c.jid === chat.jid);
-    if (idx >= 0) draft[idx] = chat;
-    else draft.push(chat);
+    if (idx >= 0) {
+      const prev = draft[idx];
+      // Une mise à jour isolée ne porte pas le dernier message : on garde
+      // celui déjà connu (tenu à jour par patchChatLastMessage).
+      draft[idx] =
+        chat.lastMessageFromMe === undefined
+          ? {
+              ...chat,
+              lastMessageId: prev.lastMessageId,
+              lastMessageFromMe: prev.lastMessageFromMe,
+              lastMessageStatus: prev.lastMessageStatus,
+            }
+          : chat;
+    } else draft.push(chat);
     draft.sort((a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0));
+  });
+}
+
+// Nouveau message ('wa:message') : devient le dernier de sa discussion s'il
+// est au moins aussi récent (coches affichées dans la liste).
+export function patchChatLastMessage(accountId: string, message: WaMessage) {
+  return chatsApi.util.updateQueryData('getChats', accountId, (draft) => {
+    const c = draft.find((cc) => cc.jid === message.chatJid);
+    if (!c) return;
+    if (c.lastMessageId === message.id) {
+      if (statusRank(message.status) >= statusRank(c.lastMessageStatus)) {
+        c.lastMessageStatus = message.status;
+      }
+      return;
+    }
+    if (message.timestamp < (c.lastMessageTs ?? 0)) return;
+    c.lastMessageId = message.id;
+    c.lastMessageFromMe = message.fromMe;
+    c.lastMessageStatus = message.status;
+  });
+}
+
+// Accusé ('wa:message-status') : met à jour les coches de la liste si le
+// message est le dernier de sa discussion. Jamais de recul.
+export function updateChatLastStatus(
+  accountId: string,
+  chatJid: string,
+  id: string,
+  status: WaMessageStatus,
+) {
+  return chatsApi.util.updateQueryData('getChats', accountId, (draft) => {
+    const c = draft.find((cc) => cc.jid === chatJid);
+    if (!c || c.lastMessageId !== id) return;
+    if (statusRank(status) >= statusRank(c.lastMessageStatus)) {
+      c.lastMessageStatus = status;
+    }
   });
 }

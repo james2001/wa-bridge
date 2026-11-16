@@ -3,6 +3,7 @@ import { WaMessageStatus, WaMessageType } from '@app/shared-types';
 import type { WaMessage, WaReaction } from '@app/shared-types';
 import { formatTime } from '../../lib/format';
 import { formatWhatsappText } from '../../lib/formatText';
+import { statusMark } from '../../lib/statusMark';
 import MediaContent from './MediaContent';
 import MessageInfoModal from './MessageInfoModal';
 import DeleteMessageModal from './DeleteMessageModal';
@@ -55,24 +56,6 @@ function groupReactions(reactions: WaReaction[]): GroupedReaction[] {
   return order.map((e) => map.get(e) as GroupedReaction);
 }
 
-// Coche(s) WhatsApp selon le statut (uniquement pour les messages sortants).
-function statusMark(status: WaMessageStatus): string {
-  switch (status) {
-    case WaMessageStatus.PENDING:
-      return '🕓';
-    case WaMessageStatus.SENT:
-      return '✓';
-    case WaMessageStatus.DELIVERED:
-      return '✓✓';
-    case WaMessageStatus.READ:
-    case WaMessageStatus.PLAYED:
-      return '✓✓';
-    case WaMessageStatus.ERROR:
-      return '⚠';
-    default:
-      return '';
-  }
-}
 
 // Texte de remplacement pour les types non-texte (rendu média réel plus tard).
 function mediaPlaceholder(message: WaMessage): string | null {

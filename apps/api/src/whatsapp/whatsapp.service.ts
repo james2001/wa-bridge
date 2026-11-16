@@ -76,6 +76,17 @@ const DEFAULT_ACCOUNT_ID = 'default';
 const META_AI_RE = /^(1313555\d{4}|131655500\d{2})@s\.whatsapp\.net$/;
 const isMetaAiJid = (jid: string): boolean =>
   META_AI_RE.test(jid) || jid.endsWith('@bot');
+// Ordre des statuts d'un message sortant (pending < sent < delivered < read
+// < played). « error » est hors échelle (-1) : jamais écrasé ni propagé.
+const OUTGOING_ORDER: WaMessageStatus[] = [
+  WaMessageStatus.PENDING,
+  WaMessageStatus.SENT,
+  WaMessageStatus.DELIVERED,
+  WaMessageStatus.READ,
+  WaMessageStatus.PLAYED,
+];
+const statusRank = (s: WaMessageStatus): number => OUTGOING_ORDER.indexOf(s);
+
 const META_AI_UNSUPPORTED =
   "Meta AI n'est pas pris en charge par wa-bridge : écrivez-lui depuis le téléphone.";
 
@@ -1097,13 +1108,7 @@ export class WhatsappService
       // arriver sous le JID @lid -> on canonicalise pour retrouver le message.
       const chatJid = (await this.resolvePn(accountId, rawJid)) ?? rawJid;
       const status = this.mapNumericStatus(update.status);
-      await this.prisma.waMessage
-        .update({
-          where: { accountId_chatJid_id: { accountId, chatJid, id } },
-          data: { status },
-        })
-        .catch(() => undefined); // message pas encore en cache
-      this.emit('message-status', accountId, { id, chatJid, status });
+      await this.applyStatus(accountId, chatJid, id, status);
       if (
         !key?.fromMe &&
         (status === WaMessageStatus.READ || status === WaMessageStatus.PLAYED)
@@ -1131,6 +1136,97 @@ export class WhatsappService
       }
     }
     await this.reconcileUnread(accountId, [...readChats]);
+  }
+
+  // Applique un statut (coches) à un message, sans jamais le faire reculer :
+  // les accusés arrivent parfois dans le désordre (« distribué » après « lu »).
+  // En 1:1, un message à toi distribué ou lu implique que tes messages
+  // PRÉCÉDENTS le sont aussi (WhatsApp n'accuse pas toujours chacun, et un
+  // accusé reçu avant l'enregistrement du message est perdu) : on les remonte.
+  // Les « en attente » ne sont pas remontés (ils ont pu échouer).
+  private async applyStatus(
+    accountId: string,
+    chatJid: string,
+    id: string,
+    status: WaMessageStatus,
+  ): Promise<void> {
+    const rank = statusRank(status);
+    if (rank < 0) return;
+    const row = await this.prisma.waMessage
+      .findUnique({
+        where: { accountId_chatJid_id: { accountId, chatJid, id } },
+        select: { status: true, fromMe: true, sentAt: true },
+      })
+      .catch(() => null);
+    if (!row) return; // message pas encore en base
+    if (rank > statusRank(row.status as WaMessageStatus)) {
+      await this.prisma.waMessage
+        .update({
+          where: { accountId_chatJid_id: { accountId, chatJid, id } },
+          data: { status },
+        })
+        .catch(() => undefined);
+      this.emit('message-status', accountId, { id, chatJid, status });
+    }
+    if (!row.fromMe || isJidGroup(chatJid) || rank < statusRank(WaMessageStatus.DELIVERED)) {
+      return;
+    }
+    // Remontée des précédents (« écouté » ne concerne que les vocaux -> « lu »).
+    const upTo =
+      status === WaMessageStatus.PLAYED ? WaMessageStatus.READ : status;
+    const lower = OUTGOING_ORDER.slice(1, OUTGOING_ORDER.indexOf(upTo));
+    const older = await this.prisma.waMessage
+      .findMany({
+        where: {
+          accountId,
+          chatJid,
+          fromMe: true,
+          sentAt: { lt: row.sentAt },
+          status: { in: lower },
+        },
+        select: { id: true },
+        take: 500,
+      })
+      .catch(() => [] as { id: string }[]);
+    if (older.length === 0) return;
+    await this.prisma.waMessage
+      .updateMany({
+        where: { accountId, chatJid, id: { in: older.map((o) => o.id) } },
+        data: { status: upTo },
+      })
+      .catch(() => undefined);
+    for (const o of older) {
+      this.emit('message-status', accountId, { id: o.id, chatJid, status: upTo });
+    }
+  }
+
+  // Même règle, en une passe sur toute la base (au démarrage) : rattrape les
+  // coches restées en retard avant ce correctif. Base locale seulement.
+  private async repairOutgoingStatuses(accountId: string): Promise<void> {
+    try {
+      const n = await this.prisma.$executeRaw`
+        WITH r AS (
+          SELECT account_id, chat_jid, id, sent_at,
+            CASE status WHEN 'sent' THEN 1 WHEN 'delivered' THEN 2
+              WHEN 'read' THEN 3 WHEN 'played' THEN 3 ELSE -1 END AS rk
+          FROM wa_messages
+          WHERE account_id = ${accountId} AND from_me
+            AND chat_jid NOT LIKE '%@g.us'
+        ), w AS (
+          SELECT account_id, chat_jid, id, rk,
+            max(rk) OVER (PARTITION BY chat_jid ORDER BY sent_at DESC
+              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS best
+          FROM r
+        )
+        UPDATE wa_messages m
+        SET status = CASE w.best WHEN 2 THEN 'delivered' ELSE 'read' END
+        FROM w
+        WHERE m.account_id = w.account_id AND m.chat_jid = w.chat_jid
+          AND m.id = w.id AND w.rk IN (1, 2) AND w.best > w.rk`;
+      if (n > 0) this.logger.log(`coches recalées (${n} messages) [${accountId}]`);
+    } catch (e) {
+      this.logger.warn(`repairOutgoingStatuses: ${e}`);
+    }
   }
 
   private mapNumericStatus(status: number): WaMessageStatus {
@@ -1177,13 +1273,7 @@ export class WhatsappService
       // L'accusé peut arriver sous le JID @lid alors que le message est stocké
       // sous le JID canonique (téléphone) -> on canonicalise.
       const chatJid = (await this.resolvePn(accountId, rawJid)) ?? rawJid;
-      await this.prisma.waMessage
-        .update({
-          where: { accountId_chatJid_id: { accountId, chatJid, id } },
-          data: { status },
-        })
-        .catch(() => undefined);
-      this.emit('message-status', accountId, { id, chatJid, status });
+      await this.applyStatus(accountId, chatJid, id, status);
       if (status === WaMessageStatus.READ || status === WaMessageStatus.PLAYED) {
         readChats.add(chatJid);
       }
@@ -3062,12 +3152,34 @@ export class WhatsappService
           .catch(() => [] as { jid: string }[])
       ).map((c) => c.jid),
     );
-    return rows
+    const kept = rows
       .filter((r) => !this.isIgnoredChat(r.jid))
       .filter((r) => !this.isPlaceholderChat(r))
       .filter((r) => !this.isEmptyDirectChat(r))
-      .filter((r) => !communityJids.has(r.jid))
-      .map((r) => this.chatRowToDto(accountId, r));
+      .filter((r) => !communityJids.has(r.jid));
+    // Dernier message de chaque discussion (coches dans la liste), en une
+    // requête.
+    const jids = kept.map((r) => r.jid);
+    const lasts = jids.length
+      ? await this.prisma.$queryRaw<
+          { chat_jid: string; id: string; from_me: boolean; status: string }[]
+        >`
+          SELECT DISTINCT ON (chat_jid) chat_jid, id, from_me, status
+          FROM wa_messages
+          WHERE account_id = ${accountId} AND chat_jid IN (${Prisma.join(jids)})
+          ORDER BY chat_jid, sent_at DESC`.catch(() => [])
+      : [];
+    const lastBy = new Map(lasts.map((l) => [l.chat_jid, l]));
+    return kept.map((r) => {
+      const dto = this.chatRowToDto(accountId, r);
+      const l = lastBy.get(r.jid);
+      return {
+        ...dto,
+        lastMessageId: l?.id ?? null,
+        lastMessageFromMe: l?.from_me ?? false,
+        lastMessageStatus: (l?.status as WaMessageStatus | undefined) ?? null,
+      };
+    });
   }
 
   // Carnet du compte : contacts 1:1 joignables par numéro (JID pn), un par
@@ -3537,6 +3649,23 @@ export class WhatsappService
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     extra?: { rawMessage?: any; fileSha256?: string | null },
   ): Promise<void> {
+    // Le statut ne recule jamais : l'écho d'un envoi (« envoyé ») arrive
+    // souvent APRÈS les accusés « distribué »/« lu » déjà enregistrés, et les
+    // écrasait (coches restées grises). m est corrigé pour l'émission au front.
+    const prev = await this.prisma.waMessage
+      .findUnique({
+        where: {
+          accountId_chatJid_id: { accountId, chatJid: m.chatJid, id: m.id },
+        },
+        select: { status: true },
+      })
+      .catch(() => null);
+    if (
+      prev &&
+      statusRank(prev.status as WaMessageStatus) > statusRank(m.status)
+    ) {
+      m.status = prev.status as WaMessageStatus;
+    }
     const row = this.toMessageRow(accountId, m, extra);
     await this.prisma.waMessage
       .upsert({
@@ -3812,6 +3941,7 @@ export class WhatsappService
       });
       for (const g of groups) await this.refreshChatPreview(accountId, g.chatJid);
       this.logger.log(`aperçus recalés (${groups.length} discussions) [${accountId}]`);
+      await this.repairOutgoingStatuses(accountId);
       const fixed = await this.reconcileUnread(accountId, undefined, false);
       if (fixed > 0) this.logger.log(`non-lus recalés (${fixed} discussions) [${accountId}]`);
     } catch (e) {

@@ -514,6 +514,13 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.convitem__check {
+  margin-right: 3px;
+  font-size: 12px;
+}
+.convitem__check--read {
+  color: #53bdeb;
+}
 .badge {
   background: var(--green);
   color: #fff;

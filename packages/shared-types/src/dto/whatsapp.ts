@@ -80,6 +80,11 @@ export interface WaChat {
   unreadCount: number;
   lastMessageTs: number | null; // epoch ms
   lastMessagePreview: string | null;
+  // Dernier message (coches dans la liste). Fournis par la liste complète ;
+  // absents d'une mise à jour isolée (le front garde alors les siens).
+  lastMessageId?: string | null;
+  lastMessageFromMe?: boolean;
+  lastMessageStatus?: WaMessageStatus | null;
   pinned: boolean;
   archived: boolean;
   muted: boolean;
