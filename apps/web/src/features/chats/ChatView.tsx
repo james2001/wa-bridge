@@ -7,6 +7,7 @@ import ChatHeader from './ChatHeader';
 import MessageList from '../messages/MessageList';
 import Composer from '../messages/Composer';
 import { markRead, subscribePresence } from '../../services/socket';
+import { isMetaAiJid } from './utils';
 
 interface Props {
   jid: string;
@@ -40,10 +41,19 @@ export default function ChatView({ jid }: Props) {
           onClose={() => setSearchOpen(false)}
         />
       )}
-      <MessageList jid={jid} accountId={accountId} />
-      {/* key : une saisie neuve par discussion (un texte en cours ne doit
-          jamais passer d'un contact à un autre). */}
-      <Composer key={`${accountId}|${jid}`} chatJid={jid} accountId={accountId} />
+      {/* key : fil remonté à chaque discussion -> ouverture tout en bas, sur
+          le dernier message (sinon la position de la précédente restait). */}
+      <MessageList key={`${accountId}|${jid}`} jid={jid} accountId={accountId} />
+      {isMetaAiJid(jid) ? (
+        <p className="composer composer--readonly">
+          Meta AI n’est pas pris en charge par wa-bridge : écrivez-lui depuis
+          le téléphone.
+        </p>
+      ) : (
+        /* key : une saisie neuve par discussion (un texte en cours ne doit
+           jamais passer d'un contact à un autre). */
+        <Composer key={`${accountId}|${jid}`} chatJid={jid} accountId={accountId} />
+      )}
     </section>
   );
 }

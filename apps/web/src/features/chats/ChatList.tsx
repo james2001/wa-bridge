@@ -104,10 +104,15 @@ export default function ChatList() {
     () =>
       chats
         ? [...chats].sort(
-            // Épinglées en tête (comme WhatsApp), puis les plus récentes.
+            // Épinglées en tête, par ordre alphabétique ; les autres, des
+            // plus récentes aux plus anciennes.
             (a, b) =>
               Number(b.pinned) - Number(a.pinned) ||
-              (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0),
+              (a.pinned && b.pinned
+                ? chatTitle(a).localeCompare(chatTitle(b), 'fr', {
+                    sensitivity: 'base',
+                  })
+                : (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0)),
           )
         : [],
     [chats],

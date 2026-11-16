@@ -69,6 +69,16 @@ const EPOCH_FLOOR_MS = 1_000_000_000_000; // 2001-09-09 en ms
 // Compte historique unique (mono-compte). Tout passe par lui en Phase 1.
 const DEFAULT_ACCOUNT_ID = 'default';
 
+// Meta AI (et autres bots WhatsApp : 1313555xxxx, 131655500xx, @bot). Baileys
+// ne sait pas lui écrire (le serveur n'accuse jamais réception) et ignore ses
+// réponses (chiffrement « msmsg », rejeté par messages-recv.js). On refuse
+// donc l'envoi plutôt que de laisser croire qu'il est parti.
+const META_AI_RE = /^(1313555\d{4}|131655500\d{2})@s\.whatsapp\.net$/;
+const isMetaAiJid = (jid: string): boolean =>
+  META_AI_RE.test(jid) || jid.endsWith('@bot');
+const META_AI_UNSUPPORTED =
+  "Meta AI n'est pas pris en charge par wa-bridge : écrivez-lui depuis le téléphone.";
+
 // Renvoie une chaîne non vide nettoyée, ou null. WhatsApp livre souvent ''
 // (chaîne vide) pour un nom absent : avec `??` la chaîne vide passerait à
 // travers et serait stockée/affichée comme un nom (=> repli sur le JID brut).
@@ -1815,6 +1825,7 @@ export class WhatsappService
     }
     // Le numéro @s.whatsapp.net est toujours une cible d'envoi valide.
     const target = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    if (isMetaAiJid(target)) throw new Error(META_AI_UNSUPPORTED);
     // Réponse : le message cité doit exister dans CETTE discussion, sinon on
     // refuse (jamais d'envoi « au hasard » sans la citation demandée).
     const quoted = quotedId
@@ -2111,6 +2122,7 @@ export class WhatsappService
     if (!/^(?:[0-9]+@(?:s\.whatsapp\.net|lid)|[0-9]+(?:-[0-9]+)?@g\.us)$/.test(toJid)) {
       throw new Error('Destinataire invalide');
     }
+    if (isMetaAiJid(toJid)) throw new Error(META_AI_UNSUPPORTED);
     const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
     const row = await this.prisma.waMessage
       .findUnique({
@@ -2151,6 +2163,7 @@ export class WhatsappService
     if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
       throw new Error('WhatsApp non connecté');
     }
+    if (isMetaAiJid(chatJid)) throw new Error(META_AI_UNSUPPORTED);
     const text = emoji.trim();
     // Une réaction = un seul emoji (ou '' pour retirer) : jamais du texte libre.
     // Hors liants (ZWJ, VS16) : seulement pictogrammes, drapeaux, teintes de
@@ -2204,6 +2217,7 @@ export class WhatsappService
       throw new Error('WhatsApp non connecté');
     }
     const target = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    if (isMetaAiJid(target)) throw new Error(META_AI_UNSUPPORTED);
 
     // Contenu Baileys selon le type MIME du fichier uploadé.
     const mime = file.mimetype || 'application/octet-stream';
@@ -3973,6 +3987,14 @@ export class WhatsappService
 
   // Discussions à NE PAS afficher: Status/Stories (status@broadcast) et
   // newsletters/channels — ce ne sont pas des conversations.
+  // Le JID est-il le compte lui-même (numéro ou LID) ?
+  private isSelfJid(accountId: string, jid: string): boolean {
+    const s = this.ensureSession(accountId);
+    const me = s.connection.me?.jid ?? null;
+    const lid = s.sock?.user?.lid ? jidNormalizedUser(s.sock.user.lid) : null;
+    return jid === me || jid === lid;
+  }
+
   private isIgnoredChat(jid: string | null | undefined): boolean {
     if (!jid) return true;
     return jid === 'status@broadcast' || jid.endsWith('@newsletter');
@@ -4170,7 +4192,9 @@ export class WhatsappService
     return {
       accountId,
       jid: row.jid,
-      name: row.name,
+      // Ta propre discussion (notes à soi) : « Moi », comme l'app officielle,
+      // plutôt que ton numéro.
+      name: this.isSelfJid(accountId, row.jid) ? 'Moi' : row.name,
       isGroup: row.isGroup,
       unreadCount: row.unreadCount,
       lastMessageTs: row.lastMessageAt ? row.lastMessageAt.getTime() : null,

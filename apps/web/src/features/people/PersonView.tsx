@@ -44,7 +44,7 @@ export default function PersonView({ jid }: Props) {
   return (
     <section className="chat">
       <PersonHeader person={person} jid={jid} />
-      <PersonTimeline jid={jid} showAccount={multiAccount} />
+      <PersonTimeline key={jid} jid={jid} showAccount={multiAccount} />
       {options.length > 0 ? (
         <Composer
           key={jid}
