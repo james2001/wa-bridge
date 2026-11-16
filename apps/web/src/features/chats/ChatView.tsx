@@ -43,7 +43,7 @@ export default function ChatView({ jid }: Props) {
       )}
       {/* key : fil remonté à chaque discussion -> ouverture tout en bas, sur
           le dernier message (sinon la position de la précédente restait). */}
-      <MessageList key={`${accountId}|${jid}`} jid={jid} accountId={accountId} />
+      <MessageList key={`list|${accountId}|${jid}`} jid={jid} accountId={accountId} />
       {isMetaAiJid(jid) ? (
         <p className="composer composer--readonly">
           Meta AI n’est pas pris en charge par wa-bridge : écrivez-lui depuis
