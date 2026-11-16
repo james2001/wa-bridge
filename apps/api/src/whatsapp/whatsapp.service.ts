@@ -890,6 +890,9 @@ export class WhatsappService
       const chat = await this.touchChat(accountId, msg, isNewIncoming);
       this.emit('message', accountId, msg, chat);
       if (chat) this.emit('chat-upsert', accountId, chat);
+      // Tu as écrit dans cette discussion (ici ou depuis le téléphone) : ce
+      // qui précède est lu, comme dans l'app officielle.
+      if (msg.fromMe) await this.reconcileUnread(accountId, [msg.chatJid]);
     }
   }
 
@@ -1061,6 +1064,9 @@ export class WhatsappService
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     updates: any[],
   ): Promise<void> {
+    // Discussions où un message a été lu (accusé read-self d'un autre de tes
+    // appareils) -> compteur de non-lus à recaler en fin de lot.
+    const readChats = new Set<string>();
     for (const { key, update } of updates) {
       const rawJid: string | undefined = key?.remoteJid ?? undefined;
       const id: string | undefined = key?.id ?? undefined;
@@ -1088,6 +1094,12 @@ export class WhatsappService
         })
         .catch(() => undefined); // message pas encore en cache
       this.emit('message-status', accountId, { id, chatJid, status });
+      if (
+        !key?.fromMe &&
+        (status === WaMessageStatus.READ || status === WaMessageStatus.PLAYED)
+      ) {
+        readChats.add(chatJid);
+      }
 
       // En 1:1, distribution/lecture arrivent ICI (statut agrégé) et NON via
       // message-receipt.update — donc sans horodatage par destinataire. On
@@ -1108,6 +1120,7 @@ export class WhatsappService
         if (stamp) await this.mergeReceipt(accountId, chatJid, id, chatJid, stamp);
       }
     }
+    await this.reconcileUnread(accountId, [...readChats]);
   }
 
   private mapNumericStatus(status: number): WaMessageStatus {
@@ -1140,6 +1153,8 @@ export class WhatsappService
           : Number((t as { toNumber?: () => number }).toNumber?.() ?? t);
       return Number.isFinite(n) && n > 0 ? n * 1000 : null;
     };
+    // En groupe, ta propre lecture (autre appareil) arrive aussi ici.
+    const readChats = new Set<string>();
     for (const { key, receipt } of updates) {
       const rawJid: string | undefined = key?.remoteJid ?? undefined;
       const id: string | undefined = key?.id ?? undefined;
@@ -1159,6 +1174,9 @@ export class WhatsappService
         })
         .catch(() => undefined);
       this.emit('message-status', accountId, { id, chatJid, status });
+      if (status === WaMessageStatus.READ || status === WaMessageStatus.PLAYED) {
+        readChats.add(chatJid);
+      }
 
       // Capture l'accusé PAR destinataire (panneau « Infos du message »).
       // userJid identifie le destinataire (présent surtout en groupe).
@@ -1172,6 +1190,7 @@ export class WhatsappService
         });
       }
     }
+    await this.reconcileUnread(accountId, [...readChats]);
   }
 
   // Fusionne un accusé par destinataire dans la colonne JSON `receipts`.
@@ -3779,8 +3798,59 @@ export class WhatsappService
       });
       for (const g of groups) await this.refreshChatPreview(accountId, g.chatJid);
       this.logger.log(`aperçus recalés (${groups.length} discussions) [${accountId}]`);
+      const fixed = await this.reconcileUnread(accountId, undefined, false);
+      if (fixed > 0) this.logger.log(`non-lus recalés (${fixed} discussions) [${accountId}]`);
     } catch (e) {
       this.logger.warn(`repairChatPreviews: ${e}`);
+    }
+  }
+
+  // Non-lus : WhatsApp n'envoie pas toujours de chats.update quand tu lis ou
+  // réponds depuis le téléphone, le compteur restait alors bloqué. Repère :
+  // le dernier message que l'on sait LU (le tien, ou un entrant passé « lu »
+  // par l'accusé read-self d'un autre de tes appareils). Les entrants
+  // postérieurs sont les seuls non-lus possibles. Ne fait que BAISSER le
+  // compteur, ne touche pas au « non lu » manuel (-1). Base locale seulement :
+  // aucun accusé n'est envoyé à WhatsApp. Sans jids : toutes les discussions.
+  private async reconcileUnread(
+    accountId: string,
+    jids?: string[],
+    emit = true,
+  ): Promise<number> {
+    if (jids && jids.length === 0) return 0;
+    try {
+      const rows = await this.prisma.$queryRaw<{ jid: string }[]>`
+        UPDATE wa_chats c SET unread_count = sub.n, updated_at = now()
+        FROM (
+          SELECT c2.account_id, c2.jid,
+            (SELECT count(*)::int FROM wa_messages m
+              WHERE m.account_id = c2.account_id AND m.chat_jid = c2.jid
+                AND NOT m.from_me AND m.sent_at > ref.t) AS n
+          FROM wa_chats c2
+          CROSS JOIN LATERAL (
+            SELECT max(m.sent_at) AS t FROM wa_messages m
+            WHERE m.account_id = c2.account_id AND m.chat_jid = c2.jid
+              AND (m.from_me OR m.status IN ('read', 'played'))
+          ) ref
+          WHERE c2.account_id = ${accountId} AND c2.unread_count > 0
+            AND ref.t IS NOT NULL
+            ${jids ? Prisma.sql`AND c2.jid IN (${Prisma.join(jids)})` : Prisma.empty}
+        ) sub
+        WHERE c.account_id = sub.account_id AND c.jid = sub.jid
+          AND sub.n < c.unread_count
+        RETURNING c.jid`;
+      if (emit && rows.length > 0) {
+        const chats = await this.prisma.waChat.findMany({
+          where: { accountId, jid: { in: rows.map((r) => r.jid) } },
+        });
+        for (const ch of chats) {
+          this.emit('chat-upsert', accountId, this.chatRowToDto(accountId, ch));
+        }
+      }
+      return rows.length;
+    } catch (e) {
+      this.logger.warn(`reconcileUnread: ${e}`);
+      return 0;
     }
   }
 
