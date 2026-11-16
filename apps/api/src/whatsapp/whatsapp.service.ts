@@ -1204,6 +1204,37 @@ export class WhatsappService
   // coches restées en retard avant ce correctif. Base locale seulement.
   private async repairOutgoingStatuses(accountId: string): Promise<void> {
     try {
+      // 1) En 1:1, l'accusé par destinataire (colonne receipts, jamais
+      //    écrasée) fait foi : il a gardé le « lu » que l'écho d'envoi avait
+      //    effacé du statut.
+      const fromReceipts = await this.prisma.$executeRaw`
+        WITH x AS (
+          SELECT m.account_id, m.chat_jid, m.id,
+            CASE
+              WHEN bool_or(r->>'playedAt' IS NOT NULL) THEN 4
+              WHEN bool_or(r->>'readAt' IS NOT NULL) THEN 3
+              WHEN bool_or(r->>'deliveredAt' IS NOT NULL) THEN 2
+              ELSE -1 END AS rk
+          FROM wa_messages m
+          CROSS JOIN LATERAL jsonb_array_elements(m.receipts) r
+          WHERE m.account_id = ${accountId} AND m.from_me
+            AND m.chat_jid NOT LIKE '%@g.us'
+            AND jsonb_typeof(m.receipts) = 'array'
+            AND m.status IN ('pending', 'sent', 'delivered', 'read')
+          GROUP BY m.account_id, m.chat_jid, m.id
+        )
+        UPDATE wa_messages m
+        SET status = CASE x.rk WHEN 4 THEN 'played' WHEN 3 THEN 'read'
+          ELSE 'delivered' END
+        FROM x
+        WHERE m.account_id = x.account_id AND m.chat_jid = x.chat_jid
+          AND m.id = x.id AND x.rk >= 2
+          AND x.rk > CASE m.status WHEN 'pending' THEN 0 WHEN 'sent' THEN 1
+            WHEN 'delivered' THEN 2 WHEN 'read' THEN 3 ELSE 4 END`;
+      if (fromReceipts > 0) {
+        this.logger.log(`coches reprises des accusés (${fromReceipts} messages) [${accountId}]`);
+      }
+      // 2) Remontée des messages précédents.
       const n = await this.prisma.$executeRaw`
         WITH r AS (
           SELECT account_id, chat_jid, id, sent_at,
@@ -2384,6 +2415,19 @@ export class WhatsappService
       try {
         await s.sock.readMessages(keys);
         this.logger.log(`markRead: ${keys.length} lu(s) sur ${readJid}`);
+        // Reflète la lecture en local (repère du recalage des non-lus).
+        await this.prisma.waMessage
+          .updateMany({
+            where: {
+              accountId,
+              chatJid: jid,
+              fromMe: false,
+              id: { in: recent.map((r) => r.id) },
+              status: { notIn: [WaMessageStatus.READ, WaMessageStatus.PLAYED] },
+            },
+            data: { status: WaMessageStatus.READ },
+          })
+          .catch(() => undefined);
       } catch (e) {
         this.logger.warn(`markRead readMessages: ${e}`);
       }
