@@ -26,6 +26,7 @@ import type {
   WaMessageInfoResponse,
   WaMessagesPage,
   WaPeopleResponse,
+  WaUnreadPreview,
 } from '@app/shared-types';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { WhatsappService } from './whatsapp.service';
@@ -116,6 +117,16 @@ export class WhatsappController {
     const lim = Math.min(Math.max(Number(limit) || 50, 1), 100);
     const bef = before ? Number(before) : null;
     return this.wa.listMessages(accountId, jid, bef, lim);
+  }
+
+  // Derniers messages non lus (info-bulle de la liste). Lecture seule : ne
+  // marque rien comme lu.
+  @Get('chats/:jid/unread')
+  async unreadPreview(
+    @Param('jid') jid: string,
+    @Query('accountId') accountId = 'default',
+  ): Promise<WaUnreadPreview> {
+    return this.wa.listUnreadPreview(accountId, jid, 20);
   }
 
   // Détail des accusés par destinataire (panneau « Infos du message »).

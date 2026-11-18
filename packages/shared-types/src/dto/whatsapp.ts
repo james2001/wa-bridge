@@ -176,6 +176,19 @@ export interface WaMessagesPage {
   nextBefore: number | null; // timestamp à passer pour la page suivante
 }
 
+// GET /api/wa/chats/:jid/unread -> derniers messages non lus d'une discussion
+// (info-bulle de la liste). Lecture seule.
+export interface WaUnreadPreviewItem {
+  id: string;
+  timestamp: number; // epoch ms
+  senderName: string | null; // groupes seulement
+  text: string; // aperçu (texte, ou « 📷 Photo »…)
+}
+export interface WaUnreadPreview {
+  messages: WaUnreadPreviewItem[]; // ordre chronologique, les plus récents
+  total: number; // nombre de non-lus de la discussion (≥ messages.length)
+}
+
 // --- Vue fusionnée par personne (multi-compte) ---
 //
 // Une « personne » = un contact 1:1 agrégé à travers les comptes liés.

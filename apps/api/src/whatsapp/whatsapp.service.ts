@@ -57,6 +57,7 @@ import {
   type WaPerson,
   type WaPresence,
   type WaReaction,
+  type WaUnreadPreview,
 } from '@app/shared-types';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -3320,6 +3321,48 @@ export class WhatsappService
       hasMore,
       nextBefore,
     };
+  }
+
+  // Derniers messages non lus d'une discussion (info-bulle de la liste).
+  // LECTURE SEULE : rien n'est marqué lu, aucun accusé n'est envoyé.
+  async listUnreadPreview(
+    accountId = DEFAULT_ACCOUNT_ID,
+    chatJid: string,
+    limit: number,
+  ): Promise<WaUnreadPreview> {
+    const chat = await this.prisma.waChat
+      .findUnique({
+        where: { accountId_jid: { accountId, jid: chatJid } },
+        select: { unreadCount: true },
+      })
+      .catch(() => null);
+    const total = chat?.unreadCount ?? 0;
+    if (total <= 0) return { messages: [], total: 0 };
+    const rows = await this.prisma.waMessage.findMany({
+      where: {
+        accountId,
+        chatJid,
+        fromMe: false,
+        type: { not: WaMessageType.SYSTEM },
+      },
+      orderBy: { sentAt: 'desc' },
+      take: Math.min(total, limit),
+    });
+    const isGroup = isJidGroup(chatJid);
+    const messages = rows.reverse().map((r) => {
+      const m = this.msgRowToDto(accountId, r);
+      const text = previewOf({
+        ...m,
+        text: this.resolveMentions(accountId, m.text),
+      });
+      return {
+        id: m.id,
+        timestamp: m.timestamp,
+        senderName: isGroup ? m.senderName : null,
+        text: text.length > 400 ? text.slice(0, 399) + '…' : text,
+      };
+    });
+    return { messages, total: Math.max(total, messages.length) };
   }
 
   // Recherche plein-texte dans les messages d'un compte (API Agent/LLM). Insensible

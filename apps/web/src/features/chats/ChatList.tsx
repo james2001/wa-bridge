@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WaAccount, WaChat } from '@app/shared-types';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { initials, formatChatTime } from '../../lib/format';
@@ -25,6 +25,7 @@ import { useLogoutMutation } from '../auth/authApi';
 import ThemeToggle from '../ui/ThemeToggle';
 import NewChatModal from './NewChatModal';
 import ChatItemMenu from './ChatItemMenu';
+import UnreadTooltip from './UnreadTooltip';
 import SearchResults from '../search/SearchResults';
 import StarredModal from '../search/StarredModal';
 import { useDebounced } from '../../hooks/useDebounced';
@@ -51,6 +52,31 @@ export default function ChatList() {
   const accounts = useAppSelector(selectAccounts);
   const defaultAccountId = useAppSelector(selectDefaultAccountId);
   const [logout] = useLogoutMutation();
+
+  // Info-bulle des non-lus : après un court survol, souris seulement (sur
+  // écran tactile, le toucher ouvre directement la discussion).
+  const [tip, setTip] = useState<{ jid: string; rect: DOMRect } | null>(null);
+  const tipTimer = useRef<number | null>(null);
+  const canHover = useMemo(
+    () => window.matchMedia?.('(hover: hover)').matches ?? false,
+    [],
+  );
+  const hideTip = useCallback(() => {
+    if (tipTimer.current !== null) window.clearTimeout(tipTimer.current);
+    tipTimer.current = null;
+    setTip(null);
+  }, []);
+  useEffect(() => {
+    if (!tip) return;
+    // La liste défile : la bulle ne suivrait plus son élément.
+    document.addEventListener('scroll', hideTip, true);
+    window.addEventListener('blur', hideTip);
+    return () => {
+      document.removeEventListener('scroll', hideTip, true);
+      window.removeEventListener('blur', hideTip);
+    };
+  }, [tip, hideTip]);
+  useEffect(() => hideTip, [hideTip]);
 
   // Réconcilie le compte actif si celui-ci disparaît (suppression reçue par
   // broadcast, ou ACK de suppression en échec côté initiateur) -> repli sur le
@@ -185,11 +211,30 @@ export default function ChatList() {
   ];
 
   const pinnedCount = (chats ?? []).filter((c) => c.pinned).length;
+  // Discussion de la bulle, relue dans le cache : la bulle disparaît dès que
+  // ses non-lus tombent à 0 (discussion ouverte, lue sur le téléphone…).
+  const tipChat = tip
+    ? (chats ?? []).find((c) => c.jid === tip.jid && c.unreadCount > 0)
+    : undefined;
 
   const renderItem = (c: WaChat) => {
     const title = chatTitle(c);
     return (
-      <div key={c.jid} className="convitem-wrap">
+      <div
+        key={c.jid}
+        className="convitem-wrap"
+        onMouseEnter={(e) => {
+          if (!canHover || c.unreadCount <= 0) return;
+          const el = e.currentTarget;
+          if (tipTimer.current !== null) window.clearTimeout(tipTimer.current);
+          tipTimer.current = window.setTimeout(() => {
+            tipTimer.current = null;
+            setTip({ jid: c.jid, rect: el.getBoundingClientRect() });
+          }, 400);
+        }}
+        onMouseLeave={hideTip}
+        onMouseDown={hideTip}
+      >
       <button
         className={
           'convitem' + (c.jid === selectedJid ? ' convitem--active' : '')
@@ -486,6 +531,7 @@ export default function ChatList() {
           )}
       </div>
 
+      {tipChat && tip && <UnreadTooltip chat={tipChat} anchor={tip.rect} />}
       {showStarred && (
         <StarredModal
           accountId={activeAccountId}

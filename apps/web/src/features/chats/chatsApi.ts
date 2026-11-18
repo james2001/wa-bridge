@@ -13,6 +13,7 @@ import type {
   WaMessage,
   WaMessageStatus,
   WaContactsResponse,
+  WaUnreadPreview,
 } from '@app/shared-types';
 
 // Argument scopé au compte pour les ressources liées à une discussion.
@@ -67,6 +68,19 @@ export const chatsApi = api.injectEndpoints({
       }),
       keepUnusedDataFor: 60,
     }),
+    // Derniers messages non lus (info-bulle de la liste). `count` et `lastTs`
+    // ne servent qu'à la clé de cache : un nouveau message change la clé et
+    // déclenche une relecture. Lecture seule côté serveur.
+    getUnreadPreview: builder.query<
+      WaUnreadPreview,
+      AccountJidArg & { count: number; lastTs: number | null }
+    >({
+      query: ({ accountId, jid }) => ({
+        url: `/wa/chats/${encodeURIComponent(jid)}/unread`,
+        params: { accountId },
+      }),
+      keepUnusedDataFor: 30,
+    }),
     // Messages importants (étoile) du compte.
     getStarred: builder.query<WaMessage[], string>({
       query: (accountId) => ({ url: '/wa/starred', params: { accountId } }),
@@ -105,6 +119,7 @@ export const {
   useGetChatMediaQuery,
   useGetContactAboutQuery,
   useGetCommunitiesQuery,
+  useGetUnreadPreviewQuery,
 } = chatsApi;
 
 // Remplace tout le cache de la liste d'un compte (sync initiale 'wa:chats').
