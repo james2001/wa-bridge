@@ -86,10 +86,29 @@ function firstString(...vals: Array<string | null | undefined>): string | null {
  * Le contenu est d'abord NORMALISÉ via `normalizeMessageContent` pour déballer
  * les enveloppes (ephemeral, viewOnce*, documentWithCaption, edited, ...).
  */
+// normalizeMessageContent + enveloppes qu'il ne déballe pas : message envoyé
+// depuis un autre de tes appareils, sticker animé, message adressé à Meta AI
+// ou mentionnant un groupe. Le contenu réel est dedans.
+export function unwrapContent(
+  message: proto.IMessage,
+): proto.IMessage | undefined {
+  let content = normalizeMessageContent(message);
+  for (let i = 0; i < 4 && content; i++) {
+    const inner =
+      content.deviceSentMessage?.message ??
+      content.lottieStickerMessage?.message ??
+      content.botInvokeMessage?.message ??
+      content.groupMentionedMessage?.message;
+    if (!inner) break;
+    content = normalizeMessageContent(inner);
+  }
+  return content;
+}
+
 function extractContent(
   message: proto.IMessage | null | undefined,
 ): Extracted | null {
-  const content = message ? normalizeMessageContent(message) : null;
+  const content = message ? unwrapContent(message) : null;
   if (!content) return null;
 
   const ctype = getContentType(content);
@@ -98,6 +117,10 @@ function extractContent(
   if (!ctype) return null;
 
   // Messages de contrôle / non-affichables -> ignorés (pas de bulle).
+  // Le téléphone n'en fait pas de bulle non plus : réponse à un événement,
+  // réaction ou commentaire chiffrés, modification chiffrée (secretEncrypted :
+  // on ne sait pas la déchiffrer, l'original reste affiché), enveloppe d'album
+  // (les photos arrivent une par une), épinglage, mentions de statut.
   switch (ctype) {
     case 'protocolMessage':
     case 'reactionMessage':
@@ -105,6 +128,22 @@ function extractContent(
     case 'messageContextInfo':
     case 'pollUpdateMessage':
     case 'keepInChatMessage':
+    case 'encEventResponseMessage':
+    case 'encReactionMessage':
+    case 'encCommentMessage':
+    case 'secretEncryptedMessage':
+    case 'albumMessage':
+    case 'pinInChatMessage':
+    case 'pollResultSnapshotMessage':
+    case 'pollResultSnapshotMessageV3':
+    case 'scheduledCallEditMessage':
+    case 'stickerSyncRmrMessage':
+    case 'placeholderMessage':
+    case 'statusMentionMessage':
+    case 'groupStatusMentionMessage':
+    case 'statusNotificationMessage':
+    case 'statusStickerInteractionMessage':
+    case 'limitSharingMessage':
       return null;
     default:
       break;
@@ -158,8 +197,9 @@ function extractContent(
       },
     };
   }
-  if (content.videoMessage) {
-    const m = content.videoMessage;
+  // ptv = « message vidéo » rond : une vidéo comme une autre ici.
+  if (content.videoMessage || content.ptvMessage) {
+    const m = (content.videoMessage ?? content.ptvMessage)!;
     return {
       type: WaMessageType.VIDEO,
       text: m.caption ?? null,
@@ -319,6 +359,49 @@ function extractContent(
     return {
       type: WaMessageType.TEXT,
       text: firstString(l.title, l.description, l.buttonText),
+      media: null,
+      quotedId,
+    };
+  }
+
+  // Événement de groupe / appel programmé / pack de stickers.
+  if (content.eventMessage) {
+    const e = content.eventMessage;
+    const when = e.startTime
+      ? new Date(Number(e.startTime) * 1000).toLocaleString('fr-FR', {
+          timeZone: 'Europe/Paris',
+          dateStyle: 'short',
+          timeStyle: 'short',
+        })
+      : null;
+    return {
+      type: WaMessageType.TEXT,
+      text: [
+        `📅 ${e.isCanceled ? 'Événement annulé' : 'Événement'} : ${e.name ?? ''}`.trim(),
+        when,
+        e.location?.name ?? null,
+        e.description ?? null,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      media: null,
+      quotedId,
+    };
+  }
+  if (content.scheduledCallCreationMessage) {
+    const c = content.scheduledCallCreationMessage;
+    return {
+      type: WaMessageType.TEXT,
+      text: `📞 Appel programmé${c.title ? ` : ${c.title}` : ''}`,
+      media: null,
+      quotedId,
+    };
+  }
+  if (content.stickerPackMessage) {
+    const k = content.stickerPackMessage;
+    return {
+      type: WaMessageType.TEXT,
+      text: `🩷 Pack de stickers${k.name ? ` : ${k.name}` : ''}`,
       media: null,
       quotedId,
     };

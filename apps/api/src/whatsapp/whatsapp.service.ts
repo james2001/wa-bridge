@@ -61,7 +61,7 @@ import {
 } from '@app/shared-types';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { mapWaMessage, previewOf } from './whatsapp.mapper';
+import { mapWaMessage, previewOf, unwrapContent } from './whatsapp.mapper';
 
 // Seuil départageant une durée relative (petite valeur) d'un timestamp epoch ms
 // (~1.7e12). Sous ce seuil, muteEndTime est une durée => discussion muette.
@@ -876,6 +876,16 @@ export class WhatsappService
       if (await this.handleProtocolMessage(accountId, raw)) continue;
       const msg = mapWaMessage(raw, s.sock?.user?.id, accountId);
       if (!msg) continue;
+      if (msg.type === WaMessageType.UNSUPPORTED) {
+        // Nom du type seulement (jamais le contenu) : pour savoir quoi prendre
+        // en charge ou masquer ensuite.
+        const c = raw.message ? unwrapContent(raw.message) : undefined;
+        this.logger.warn(
+          `message non pris en charge ${msg.id} (${msg.chatJid}) : ${
+            c ? Object.keys(c).join(',') : 'vide'
+          }`,
+        );
+      }
       // Ignore les Status/Stories et newsletters (pas des conversations).
       if (this.isIgnoredChat(msg.chatJid)) continue;
       // Canonicalise vers le numéro pour qu'un contact = UNE conversation.
@@ -3856,12 +3866,13 @@ export class WhatsappService
     try {
       const content = rawMessageContent
         ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (normalizeMessageContent(rawMessageContent) as any)
+          (unwrapContent(rawMessageContent) as any)
         : null;
       if (!content) return { rawContent: rawMessageContent ?? null, fileSha256: null };
       const node =
         content.imageMessage ??
         content.videoMessage ??
+        content.ptvMessage ??
         content.audioMessage ??
         content.documentMessage ??
         content.stickerMessage ??
