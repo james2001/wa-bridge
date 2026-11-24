@@ -6,6 +6,7 @@ import Avatar from '../../components/Avatar';
 import { useGetChatsQuery, useGetCommunitiesQuery } from './chatsApi';
 import { chatTitle, prettyJid } from './utils';
 import { isReadStatus, statusMark } from '../../lib/statusMark';
+import { TypingOr } from './Typing';
 import {
   selectActiveAccountId,
   selectChat,
@@ -282,7 +283,7 @@ export default function ChatList() {
                   {drafts[draftKey(c.accountId, c.jid)]}
                 </>
               ) : (
-                <>
+                <TypingOr accountId={c.accountId} jid={c.jid}>
                   {c.lastMessageFromMe && c.lastMessageStatus && (
                     <span
                       className={
@@ -296,7 +297,7 @@ export default function ChatList() {
                     </span>
                   )}
                   {c.lastMessagePreview ?? ''}
-                </>
+                </TypingOr>
               )}
             </span>
             {c.pinned && (

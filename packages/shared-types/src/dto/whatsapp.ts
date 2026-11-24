@@ -263,6 +263,8 @@ export interface WaPresence {
   jid: string;
   kind: PresenceKind;
   at: number; // epoch ms
+  // Groupe : nom du participant qui écrit / enregistre (null sinon).
+  participantName?: string | null;
 }
 
 // --- API Agent / LLM (server-to-server, header X-API-Key) ---

@@ -7,6 +7,7 @@ import { selectChat, toggleInfoPanel, selectInfoPanelOpen } from '../ui/uiSlice'
 import { selectPresence } from '../whatsapp/waSlice';
 import { archiveChat, muteChat, pinChat } from '../../services/socket';
 import { useGetChatsQuery } from './chatsApi';
+import { TypingOr } from './Typing';
 
 // Limite WhatsApp (le backend applique la même).
 const MAX_PINNED = 3;
@@ -18,18 +19,11 @@ interface Props {
   onSearch?: () => void;
 }
 
-function presenceText(p: WaPresence | undefined): string | null {
-  if (!p) return null;
-  switch (p.kind) {
-    case PresenceKind.COMPOSING:
-      return 'en train d’écrire…';
-    case PresenceKind.RECORDING:
-      return 'en train d’enregistrer…';
-    case PresenceKind.AVAILABLE:
-      return 'en ligne';
-    default:
-      return null;
-  }
+// « écrit… » est rendu par TypingOr ; ici, seulement « en ligne » (pas pour
+// un groupe : la présence d'un membre ne dit rien du groupe).
+function presenceText(p: WaPresence | undefined, isGroup: boolean): string | null {
+  if (!p || isGroup) return null;
+  return p.kind === PresenceKind.AVAILABLE ? 'en ligne' : null;
 }
 
 export default function ChatHeader({ chat, jid, accountId, onSearch }: Props) {
@@ -37,7 +31,8 @@ export default function ChatHeader({ chat, jid, accountId, onSearch }: Props) {
   const presence = useAppSelector(selectPresence(accountId, jid));
   const infoOpen = useAppSelector(selectInfoPanelOpen);
   const title = chat ? chatTitle(chat) : prettyJid(jid);
-  const subtitle = presenceText(presence) ?? prettyJid(jid);
+  const subtitle =
+    presenceText(presence, chat?.isGroup ?? jid.endsWith('@g.us')) ?? prettyJid(jid);
 
   const muted = chat?.muted ?? false;
   const archived = chat?.archived ?? false;
@@ -72,7 +67,11 @@ export default function ChatHeader({ chat, jid, accountId, onSearch }: Props) {
         />
         <div className="chathdr__info">
           <span className="chathdr__title">{title}</span>
-          <span className="chathdr__status">{subtitle}</span>
+          <span className="chathdr__status">
+            <TypingOr accountId={accountId} jid={jid}>
+              {subtitle}
+            </TypingOr>
+          </span>
         </div>
       </button>
       <div className="chathdr__actions">

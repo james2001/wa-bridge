@@ -2378,3 +2378,79 @@ a.gallery__file:hover {
   margin: 0;
   color: var(--text-muted);
 }
+
+/* « écrit… » : trois points animés (liste, en-tête, bas du fil). */
+.typing {
+  color: var(--green-dark);
+  font-weight: 500;
+}
+.typingdots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+.typingdots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.35;
+  animation: typingdot 1.2s infinite ease-in-out;
+}
+.typingdots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.typingdots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes typingdot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typingdots i {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+/* Bulle en bas du fil : ancrée à la jonction fil / saisie, sans hauteur
+   propre, pour ne pas décaler la liste ni son défilement. */
+.typingbubble-anchor {
+  position: relative;
+  height: 0;
+  z-index: 5;
+}
+.typingbubble {
+  position: absolute;
+  left: 16px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--bubble-in);
+  color: var(--text-muted);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.13);
+  pointer-events: none;
+}
+.typingbubble .typingdots {
+  margin-right: 0;
+}
+.typingbubble .typingdots i {
+  width: 7px;
+  height: 7px;
+}
+.typingbubble__name {
+  font-size: 12px;
+}

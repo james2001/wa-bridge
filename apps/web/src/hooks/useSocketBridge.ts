@@ -44,7 +44,15 @@ import {
   updatePersonReactions,
 } from '../features/people/peopleApi';
 import { api } from '../app/api';
-import { connectSocket, disconnectSocket } from '../services/socket';
+import {
+  connectSocket,
+  disconnectSocket,
+  setClientActive,
+} from '../services/socket';
+import { PresenceKind } from '@app/shared-types';
+
+// Sans clic ni frappe depuis ce délai, l'onglet ne compte plus comme utilisé.
+const IDLE_MS = 3 * 60_000;
 
 // Connecte le socket quand l'accessToken change et câble les événements
 // serveur -> état Redux / cache RTK Query. Monté une fois (app authentifiée).
@@ -117,6 +125,19 @@ export function useSocketBridge(): void {
         },
       });
       dispatch(upsertMessage(p.accountId, p.message.chatJid, p.message));
+      // Le message est arrivé : « écrit… » s'éteint sans attendre la pause.
+      if (!p.message.fromMe) {
+        dispatch(
+          setPresence({
+            accountId: p.accountId,
+            jid: p.message.chatJid,
+            kind: p.message.chatJid.endsWith('@g.us')
+              ? PresenceKind.PAUSED
+              : PresenceKind.AVAILABLE,
+            at: Date.now(),
+          }),
+        );
+      }
       dispatch(patchChatLastMessage(p.accountId, p.message));
       // Vue fusionnée: patche la timeline de la personne (no-op si non observée).
       dispatch(upsertPersonMessage(p.message));
@@ -211,7 +232,47 @@ export function useSocketBridge(): void {
     socket.on('wa:presence', onPresence);
     socket.on('wa:history-synced', onHistorySynced);
 
+    // Onglet utilisé ou non (cf. setClientActive). Recalculé sur les
+    // changements de visibilité / focus, à la reprise d'activité, toutes les
+    // 30 s (inactivité) et à chaque (re)connexion du socket.
+    let active = false;
+    let lastInput = Date.now();
+    const computeActive = () =>
+      document.visibilityState === 'visible' &&
+      document.hasFocus() &&
+      Date.now() - lastInput < IDLE_MS;
+    const syncActive = (force = false) => {
+      const a = computeActive();
+      if (a !== active || force) {
+        active = a;
+        setClientActive(a);
+      }
+    };
+    const onFocusChange = () => syncActive();
+    const onConnect = () => syncActive(true);
+    const onInput = () => {
+      lastInput = Date.now();
+      if (!active) syncActive();
+    };
+    const inputEvents = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart'];
+    for (const ev of inputEvents) {
+      window.addEventListener(ev, onInput, { passive: true });
+    }
+    document.addEventListener('visibilitychange', onFocusChange);
+    window.addEventListener('focus', onFocusChange);
+    window.addEventListener('blur', onFocusChange);
+    socket.on('connect', onConnect);
+    const idleTimer = window.setInterval(() => syncActive(), 30_000);
+    syncActive(true);
+
     return () => {
+      for (const ev of inputEvents) window.removeEventListener(ev, onInput);
+      document.removeEventListener('visibilitychange', onFocusChange);
+      window.removeEventListener('focus', onFocusChange);
+      window.removeEventListener('blur', onFocusChange);
+      socket.off('connect', onConnect);
+      window.clearInterval(idleTimer);
+      if (active) setClientActive(false);
       socket.off('wa:accounts', onAccounts);
       socket.off('wa:connection', onConnection);
       socket.off('wa:chats', onChats);

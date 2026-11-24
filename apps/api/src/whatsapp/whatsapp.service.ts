@@ -166,6 +166,12 @@ interface AccountSession {
   // Relecture complète de l'app-state en cours (cf. resyncChatStateOnce) :
   // seuls les épinglages en sont retenus.
   chatStateReplay: boolean;
+  // Clients web (id de socket) actuellement utilisés : onglet visible, au
+  // premier plan, avec une activité récente. Tant qu'il y en a un, le compte
+  // est « en ligne » côté WhatsApp, condition pour recevoir « écrit… ».
+  activeClients: Set<string>;
+  // Derniers contacts suivis (présence), réabonnés au passage en ligne.
+  presenceSubs: string[];
 }
 
 // Champs app-state posés localement puis renvoyés en écho par WhatsApp.
@@ -331,6 +337,8 @@ export class WhatsappService
         lastEventAt: Date.now(),
         lidToPn: new Map(),
         nameByJid: new Map(),
+        activeClients: new Set(),
+        presenceSubs: [],
         blockedJids: new Set(),
         historySyncing: false,
         groupBackfillRunning: false,
@@ -736,6 +744,8 @@ export class WhatsappService
       // Une fois par compte : relit l'état « épinglé / archivé / lu » depuis
       // WhatsApp (laisse d'abord finir la synchro de connexion).
       setTimeout(() => void this.resyncChatStateOnce(accountId), 20_000);
+      // Reconnexion pendant qu'un onglet est utilisé : repasser en ligne.
+      if (s.activeClients.size > 0) void this.sendOnline(s, true);
     }
 
     if (connection === 'close') {
@@ -888,7 +898,9 @@ export class WhatsappService
       // LID) trouve l'id existant -> pas de double comptage. La synchro
       // d'historique ('append'/history.set) n'incrémente pas.
       let isNewIncoming = false;
-      if (!msg.fromMe && u?.type === 'notify') {
+      // Les notifications système (ajout au groupe, changement de nom…) ne
+      // comptent pas comme non-lues, comme dans l'app officielle.
+      if (!msg.fromMe && u?.type === 'notify' && msg.type !== WaMessageType.SYSTEM) {
         const existed = await this.prisma.waMessage
           .findUnique({
             where: {
@@ -913,8 +925,12 @@ export class WhatsappService
       this.emit('message', accountId, msg, chat);
       if (chat) this.emit('chat-upsert', accountId, chat);
       // Tu as écrit dans cette discussion (ici ou depuis le téléphone) : ce
-      // qui précède est lu, comme dans l'app officielle.
-      if (msg.fromMe) await this.reconcileUnread(accountId, [msg.chatJid]);
+      // qui précède est lu, comme dans l'app officielle. Pour un entrant, la
+      // même règle écarte un message livré en retard, plus ancien que ta
+      // réponse (reconnexion) : il ne doit pas rallumer la pastille.
+      if (msg.fromMe || isNewIncoming) {
+        await this.reconcileUnread(accountId, [msg.chatJid]);
+      }
     }
   }
 
@@ -1559,8 +1575,12 @@ export class WhatsappService
 
   // Mises à jour de discussions (non-lus, nom...). Sert notamment à refléter
   // dans le web le fait que tu as lu une conversation depuis ton téléphone.
-  // Mises à jour de discussions. Le `unreadCount` de WhatsApp y est AUTORITAIRE
-  // (reflète l'état multi-device, dont les lectures sur le téléphone).
+  // Mises à jour de discussions. ATTENTION au `unreadCount` de Baileys :
+  //  - 0 : lue (sur un autre appareil) ; -1 : « marquée non lue ». Absolus.
+  //  - > 0 : un INCRÉMENT (+1 par message entrant, cumulé par le tampon
+  //    d'événements), pas le total. L'écrire tel quel écrasait le compteur
+  //    (3 non-lus devenaient 1) ou, arrivé après une réponse, faisait
+  //    réapparaître un non-lu. Ignoré : touchChat compte déjà les entrants.
   private async onChatsUpdate(
     accountId: string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1574,7 +1594,8 @@ export class WhatsappService
     for (const raw of updates) {
       const ch = replay ? { id: raw?.id, pinned: raw?.pinned } : raw;
       if (!ch?.id || this.isIgnoredChat(ch.id)) continue;
-      const hasUnread = typeof ch.unreadCount === 'number';
+      const hasUnread =
+        typeof ch.unreadCount === 'number' && ch.unreadCount <= 0;
       const meta = this.chatMetaOf(ch);
       // Rien d'intéressant ici (ni non-lus, ni nom, ni archive/mute).
       if (
@@ -1617,13 +1638,14 @@ export class WhatsappService
       ) {
         continue; // plus rien à écrire après suppression de l'écho gardé
       }
-      // -1 = « marquée non lue » (pastille sans nombre), posé par WhatsApp
-      // (markChatAsRead read=false) et par markUnread : on le garde. Les autres
+      // Seuls 0 (lu) et -1 (« marquée non lue », pastille sans nombre, posé
+      // par WhatsApp et par markUnread) sont appliqués : les valeurs positives
+      // sont des incréments de Baileys, déjà comptés à la réception. Les autres
       // valeurs négatives sont ramenées à 0.
       const unread = hasUnread
         ? ch.unreadCount === -1
           ? -1
-          : Math.max(0, ch.unreadCount as number)
+          : 0
         : undefined;
       const name = await this.chatDisplayName(accountId, jid, ch.name);
       const row = await this.prisma.waChat
@@ -3120,11 +3142,44 @@ export class WhatsappService
   ): Promise<void> {
     const s = this.ensureSession(accountId);
     if (!s.sock || s.connection.state !== ConnectionState.OPEN) return;
+    s.presenceSubs = [chatJid, ...s.presenceSubs.filter((j) => j !== chatJid)].slice(0, 10);
     try {
       const target = (await this.getLid(accountId, chatJid)) ?? chatJid;
       await s.sock.presenceSubscribe(target);
     } catch (e) {
       this.logger.warn(`subscribePresence ${chatJid}: ${e}`);
+    }
+  }
+
+  // En ligne / hors ligne. WhatsApp ne transmet « écrit… » et « en ligne »
+  // qu'aux appareils en ligne ; le pont se connecte hors ligne
+  // (markOnlineOnConnect: false) pour ne pas couper les notifications du
+  // téléphone. Comme WhatsApp Web, il passe donc en ligne tant qu'un onglet
+  // est réellement utilisé, et repasse hors ligne dès qu'il ne l'est plus.
+  // Seule une présence est envoyée : aucun message, aucun accusé.
+  setClientActive(clientId: string, active: boolean): void {
+    for (const s of this.sessions.values()) {
+      const before = s.activeClients.size > 0;
+      if (active) s.activeClients.add(clientId);
+      else s.activeClients.delete(clientId);
+      const after = s.activeClients.size > 0;
+      if (before !== after) void this.sendOnline(s, after);
+    }
+  }
+
+  private async sendOnline(s: AccountSession, online: boolean): Promise<void> {
+    if (!s.sock || s.connection.state !== ConnectionState.OPEN) return;
+    try {
+      await s.sock.sendPresenceUpdate(online ? 'available' : 'unavailable');
+    } catch (e) {
+      this.logger.warn(`[${s.accountId}] présence ${online}: ${e}`);
+      return;
+    }
+    this.logger.log(`[${s.accountId}] ${online ? 'en ligne (onglet utilisé)' : 'hors ligne'}`);
+    if (!online) return;
+    // L'abonnement à la présence d'un contact n'est servi qu'en ligne.
+    for (const jid of [...s.presenceSubs].reverse()) {
+      await this.subscribePresence(s.accountId, jid);
     }
   }
 
@@ -3141,14 +3196,23 @@ export class WhatsappService
       const id: string | undefined = u?.id;
       if (!id) return;
       const presences = u?.presences ?? {};
-      const first = Object.values(presences)[0] as
-        | { lastKnownPresence?: string | null }
-        | undefined;
+      const [participant, first] = (Object.entries(presences)[0] ?? []) as [
+        string | undefined,
+        { lastKnownPresence?: string | null } | undefined,
+      ];
+      const jid = (await this.resolvePn(accountId, id)) ?? id;
+      // Groupe : qui écrit (le nom s'affiche devant « écrit… »).
+      let participantName: string | null = null;
+      if (isJidGroup(jid) && participant && participant !== id) {
+        const pjid = (await this.resolvePn(accountId, participant)) ?? participant;
+        participantName = await this.nameFor(accountId, pjid);
+      }
       const presence: WaPresence = {
         accountId,
-        jid: (await this.resolvePn(accountId, id)) ?? id,
+        jid,
         kind: this.mapPresence(first?.lastKnownPresence),
         at: Date.now(),
+        participantName,
       };
       this.emit('presence', accountId, presence);
     } catch (e) {
@@ -4056,7 +4120,8 @@ export class WhatsappService
           SELECT c2.account_id, c2.jid,
             (SELECT count(*)::int FROM wa_messages m
               WHERE m.account_id = c2.account_id AND m.chat_jid = c2.jid
-                AND NOT m.from_me AND m.sent_at > ref.t) AS n
+                AND NOT m.from_me AND m.type <> 'system'
+                AND m.sent_at > ref.t) AS n
           FROM wa_chats c2
           CROSS JOIN LATERAL (
             SELECT max(m.sent_at) AS t FROM wa_messages m
