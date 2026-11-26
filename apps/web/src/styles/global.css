@@ -1,4 +1,16 @@
 :root {
+  --sender-0: #c2185b;
+  --sender-1: #7b1fa2;
+  --sender-2: #3949ab;
+  --sender-3: #0277bd;
+  --sender-4: #00796b;
+  --sender-5: #2e7d32;
+  --sender-6: #9a6700;
+  --sender-7: #d84315;
+  --sender-8: #6d4c41;
+  --sender-9: #ad1457;
+  --sender-10: #00838f;
+  --sender-11: #5e35b1;
   --green: #00a884;
   --green-dark: #008069;
   --green-light: #d9fdd3;
@@ -26,6 +38,18 @@
 
 /* Thème sombre : posé par <html data-theme="dark"> (src/lib/theme.ts). */
 :root[data-theme='dark'] {
+  --sender-0: #ff7aa8;
+  --sender-1: #d69cf5;
+  --sender-2: #9fa8ff;
+  --sender-3: #64b5f6;
+  --sender-4: #4dd0c1;
+  --sender-5: #81c784;
+  --sender-6: #ffca5f;
+  --sender-7: #ff8a65;
+  --sender-8: #d2b4a6;
+  --sender-9: #f48fb1;
+  --sender-10: #4dd0e1;
+  --sender-11: #b39ddb;
   --green: #00a884;
   --green-dark: #00a884;
   --green-light: #103529;
@@ -2423,17 +2447,8 @@ a.gallery__file:hover {
     opacity: 0.7;
   }
 }
-/* Bulle en bas du fil : ancrée à la jonction fil / saisie, sans hauteur
-   propre, pour ne pas décaler la liste ni son défilement. */
-.typingbubble-anchor {
-  position: relative;
-  height: 0;
-  z-index: 5;
-}
+/* Bulle « ••• » : dernière ligne du fil, côté messages reçus. */
 .typingbubble {
-  position: absolute;
-  left: 16px;
-  bottom: 8px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2442,7 +2457,6 @@ a.gallery__file:hover {
   background: var(--bubble-in);
   color: var(--text-muted);
   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.13);
-  pointer-events: none;
 }
 .typingbubble .typingdots {
   margin-right: 0;
@@ -2453,4 +2467,23 @@ a.gallery__file:hover {
 }
 .typingbubble__name {
   font-size: 12px;
+}
+
+/* Citation cliquable : mène au message cité. */
+.bubble__quote--link {
+  width: 100%;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.bubble__quote--link:hover {
+  filter: brightness(0.96);
+}
+.bubble__quote--link:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
 }

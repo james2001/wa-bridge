@@ -4254,10 +4254,22 @@ export class WhatsappService
     const s = this.ensureSession(accountId);
     const pn = s.lidToPn.get(`${num}@lid`);
     const candidates = [pn, `${num}@s.whatsapp.net`, `${num}@lid`];
+    // Mention de toi : ton nom WhatsApp, pas ta fiche de carnet (souvent
+    // juste ton numéro).
+    if (candidates.some((jid) => jid && this.isSelfJid(accountId, jid))) {
+      return cleanName(s.connection.me?.name) ?? 'Moi';
+    }
     for (const jid of candidates) {
       if (!jid) continue;
       const entry = s.nameByJid.get(jid);
-      const name = entry?.carnet ?? entry?.push;
+      // Un « nom » qui n'est qu'un numéro (+33 6 …) n'apporte rien : on
+      // passe au pseudo WhatsApp.
+      const name =
+        [entry?.carnet, entry?.push].find(
+          (n) => n && !/^[+\d\s().-]+$/.test(n),
+        ) ??
+        entry?.carnet ??
+        entry?.push;
       if (name) return name;
     }
     return null;

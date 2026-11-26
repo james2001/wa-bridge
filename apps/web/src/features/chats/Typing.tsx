@@ -64,13 +64,13 @@ export function TypingOr({
   );
 }
 
-// Bulle « ••• » en bas du fil, posée par-dessus la liste (hors du conteneur
-// défilant : ne touche ni au défilement ni à la position de lecture).
+// Bulle « ••• » en dernière ligne du fil : elle fait remonter les messages
+// (si l'on est en bas, le fil la suit comme un nouveau message).
 export function TypingBubble({ accountId, jid }: { accountId: string; jid: string }) {
   const p = useTyping(accountId, jid);
   if (!p) return null;
   return (
-    <div className="typingbubble-anchor">
+    <div className="bubblerow typingrow">
       <div className="typingbubble" role="status" aria-label={typingLabel(p)}>
         <TypingDots />
         {p.participantName && (

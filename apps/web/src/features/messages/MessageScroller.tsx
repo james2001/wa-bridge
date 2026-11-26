@@ -32,6 +32,9 @@ interface Props {
   renderBubble: (message: WaMessage) => ReactNode;
   errorLabel?: string;
   emptyLabel?: string;
+  // Rendu après le dernier message, DANS le fil (ex. bulle « écrit… ») : il
+  // pousse les messages vers le haut au lieu de les recouvrir.
+  footer?: ReactNode;
 }
 
 // Zone de messages défilante réutilisable (préservation de position au préfixe
@@ -51,6 +54,7 @@ export default function MessageScroller({
   renderBubble,
   errorLabel = 'Impossible de charger les messages.',
   emptyLabel = 'Aucun message dans cette discussion.',
+  footer,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Wrapper interne contenant les bulles: sa hauteur est observée (ResizeObserver)
@@ -188,6 +192,7 @@ export default function MessageScroller({
       )}
       <div className="msglist__content" ref={contentRef}>
         {messages.map(renderBubble)}
+        {footer}
       </div>
       {showJump && (
         <button

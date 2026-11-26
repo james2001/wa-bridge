@@ -11,6 +11,7 @@ import ForwardModal from './ForwardModal';
 import { reactToMessage, starMessage } from '../../services/socket';
 import { useAppDispatch } from '../../app/hooks';
 import { setComposerAction } from '../ui/uiSlice';
+import { senderColor } from '../../lib/senderColor';
 
 // Chargé à la demande : la bibliothèque d'emojis pèse plusieurs centaines de Ko.
 const EmojiPanel = lazy(() => import('../../components/EmojiPanel'));
@@ -29,6 +30,8 @@ interface Props {
   showAccount?: boolean;
   accountLabel?: string;
   accountColor?: string | null;
+  // Clic sur la citation : aller au message cité (fourni par le fil).
+  onJumpTo?: (id: string) => void;
 }
 
 // Réaction agrégée pour l'affichage: un emoji, son compteur, et un drapeau
@@ -141,6 +144,7 @@ export default function MessageBubble({
   showAccount = false,
   accountLabel,
   accountColor,
+  onJumpTo,
 }: Props) {
   const dispatch = useAppDispatch();
   const isOwn = message.fromMe;
@@ -347,15 +351,51 @@ export default function MessageBubble({
             ⓘ
           </button>
         )}
-        {showSender && <span className="bubble__sender">{senderLabel}</span>}
-        {hasQuote && (
-          <div className="bubble__quote">
-            {quoteSender && (
-              <span className="bubble__quote-sender">{quoteSender}</span>
-            )}
-            <span className="bubble__quote-text">{quoteText}</span>
-          </div>
+        {showSender && (
+          <span
+            className="bubble__sender"
+            style={{ color: senderColor(message.senderJid ?? senderLabel) }}
+          >
+            {senderLabel}
+          </span>
         )}
+        {hasQuote &&
+          (() => {
+            // Couleur de l'auteur cité (comme son nom dans le groupe).
+            const qColor =
+              isGroup && quoted && !quoted.fromMe
+                ? senderColor(quoted.senderJid ?? quoteSender)
+                : undefined;
+            const inner = (
+              <>
+                {quoteSender && (
+                  <span
+                    className="bubble__quote-sender"
+                    style={qColor ? { color: qColor } : undefined}
+                  >
+                    {quoteSender}
+                  </span>
+                )}
+                <span className="bubble__quote-text">{quoteText}</span>
+              </>
+            );
+            const style = qColor ? { borderLeftColor: qColor } : undefined;
+            return onJumpTo && message.quotedId ? (
+              <button
+                type="button"
+                className="bubble__quote bubble__quote--link"
+                style={style}
+                title="Aller au message cité"
+                onClick={() => onJumpTo(message.quotedId as string)}
+              >
+                {inner}
+              </button>
+            ) : (
+              <div className="bubble__quote" style={style}>
+                {inner}
+              </div>
+            );
+          })()}
         {hasMedia && <MediaContent message={message} />}
         {placeholder && <span className="bubble__media">{placeholder}</span>}
         {unsupported && (
