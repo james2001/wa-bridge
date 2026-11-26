@@ -2487,3 +2487,76 @@ a.gallery__file:hover {
   outline: 2px solid var(--green);
   outline-offset: 1px;
 }
+
+/* ---------- Affichage compact de la colonne de gauche ----------
+   Petits écrans : recherche dans l'en-tête, barres et discussions serrées.
+   « Ajouter un compte / Re-lier » (compte unique) restent dans l'affichage
+   normal. */
+.sidebar__header--compact {
+  gap: 4px;
+  padding: 4px 6px 4px 8px;
+}
+.sidebar__header--compact .iconbtn {
+  width: 30px;
+  height: 30px;
+  font-size: 16px;
+}
+.sidebar__search--inline {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border-bottom: 0;
+  background: transparent;
+}
+.sidebar__search--inline input {
+  padding: 5px 12px;
+  font-size: 13px;
+}
+[data-density='compact'] .acctbar--single {
+  display: none;
+}
+[data-density='compact'] .acctbar {
+  padding: 3px 8px;
+}
+[data-density='compact'] .notifbar {
+  padding: 5px 12px;
+  font-size: 12px;
+}
+[data-density='compact'] .filterbar {
+  gap: 6px;
+  padding: 4px 8px;
+}
+[data-density='compact'] .filterchip {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+[data-density='compact'] .filterchip__count {
+  min-width: 16px;
+  height: 16px;
+  font-size: 10px;
+}
+[data-density='compact'] .convitem {
+  gap: 10px;
+  padding: 5px 12px;
+}
+[data-density='compact'] .convitem .avatar {
+  width: 34px;
+  height: 34px;
+  font-size: 13px;
+}
+[data-density='compact'] .convitem__title {
+  font-size: 14px;
+}
+[data-density='compact'] .convitem__preview {
+  font-size: 12.5px;
+}
+[data-density='compact'] .convitem .badge {
+  min-width: 18px;
+  height: 18px;
+  font-size: 10px;
+}
+[data-density='compact'] .community__header,
+[data-density='compact'] .archived-toggle {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}

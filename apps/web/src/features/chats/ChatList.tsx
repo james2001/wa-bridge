@@ -6,6 +6,8 @@ import Avatar from '../../components/Avatar';
 import { useGetChatsQuery, useGetCommunitiesQuery } from './chatsApi';
 import { chatTitle, prettyJid } from './utils';
 import Ticks from '../../components/Ticks';
+import DensityToggle from '../ui/DensityToggle';
+import { useDensity } from '../../lib/density';
 import { TypingOr } from './Typing';
 import {
   selectActiveAccountId,
@@ -92,6 +94,7 @@ export default function ChatList() {
   }, [accounts, activeAccountId, defaultAccountId, dispatch]);
   const [showArchived, setShowArchived] = useState(false);
   const [query, setQuery] = useState('');
+  const compact = useDensity() === 'compact';
   const [filter, setFilter] = useState<ChatFilter>('all');
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [showNewChat, setShowNewChat] = useState(false);
@@ -381,13 +384,34 @@ export default function ChatList() {
     );
   };
 
+  const searchInput = (
+    <input
+      type="search"
+      aria-label="Rechercher une discussion"
+      placeholder={compact ? 'Rechercher' : 'Rechercher une discussion'}
+      value={query}
+      onChange={(e) => setQuery(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') setQuery('');
+      }}
+    />
+  );
+
   return (
     <aside className="sidebar">
-      <header className="sidebar__header">
-        <div className="sidebar__me">
-          <div className="avatar avatar--sm">{initials(meName)}</div>
-          <span>{meName}</span>
-        </div>
+      <header
+        className={'sidebar__header' + (compact ? ' sidebar__header--compact' : '')}
+      >
+        {compact ? (
+          <div className="sidebar__search sidebar__search--inline">
+            {searchInput}
+          </div>
+        ) : (
+          <div className="sidebar__me">
+            <div className="avatar avatar--sm">{initials(meName)}</div>
+            <span>{meName}</span>
+          </div>
+        )}
         <div className="sidebar__actions">
           <button
             type="button"
@@ -408,6 +432,7 @@ export default function ChatList() {
             ★
           </button>
           <ThemeToggle />
+          <DensityToggle />
           <button
             className="iconbtn"
             title="Se déconnecter"
@@ -426,18 +451,7 @@ export default function ChatList() {
         onRelink={setRelinkAccount}
       />
 
-      <div className="sidebar__search">
-        <input
-          type="search"
-          aria-label="Rechercher une discussion"
-          placeholder="Rechercher une discussion"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') setQuery('');
-          }}
-        />
-      </div>
+      {!compact && <div className="sidebar__search">{searchInput}</div>}
 
       {notifPerm === 'default' && (
         <button
