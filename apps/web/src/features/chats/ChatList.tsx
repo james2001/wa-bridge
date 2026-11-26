@@ -5,7 +5,7 @@ import { initials, formatChatTime } from '../../lib/format';
 import Avatar from '../../components/Avatar';
 import { useGetChatsQuery, useGetCommunitiesQuery } from './chatsApi';
 import { chatTitle, prettyJid } from './utils';
-import { isReadStatus, statusMark } from '../../lib/statusMark';
+import Ticks from '../../components/Ticks';
 import { TypingOr } from './Typing';
 import {
   selectActiveAccountId,
@@ -285,16 +285,11 @@ export default function ChatList() {
               ) : (
                 <TypingOr accountId={c.accountId} jid={c.jid}>
                   {c.lastMessageFromMe && c.lastMessageStatus && (
-                    <span
-                      className={
-                        'convitem__check' +
-                        (isReadStatus(c.lastMessageStatus)
-                          ? ' convitem__check--read'
-                          : '')
-                      }
-                    >
-                      {statusMark(c.lastMessageStatus)}
-                    </span>
+                    <Ticks
+                      className="convitem__check"
+                      status={c.lastMessageStatus}
+                      partialRead={c.lastMessagePartialRead}
+                    />
                   )}
                   {c.lastMessagePreview ?? ''}
                 </TypingOr>

@@ -153,9 +153,14 @@ export function useSocketBridge(): void {
       id: string;
       chatJid: string;
       status: WaMessageStatus;
+      partialRead?: boolean;
     }) => {
-      dispatch(updateMessageStatus(p.accountId, p.chatJid, p.id, p.status));
-      dispatch(updateChatLastStatus(p.accountId, p.chatJid, p.id, p.status));
+      dispatch(
+        updateMessageStatus(p.accountId, p.chatJid, p.id, p.status, p.partialRead),
+      );
+      dispatch(
+        updateChatLastStatus(p.accountId, p.chatJid, p.id, p.status, p.partialRead),
+      );
       dispatch(
         updatePersonMessageStatus(p.accountId, p.chatJid, p.id, p.status),
       );

@@ -1,5 +1,5 @@
 import { api } from '../../app/api';
-import { statusRank } from '../../lib/statusMark';
+import { isReadStatus, statusRank } from '../../lib/statusMark';
 import type {
   WaChat,
   WaChatsResponse,
@@ -165,6 +165,7 @@ export function patchChatLastMessage(accountId: string, message: WaMessage) {
     c.lastMessageId = message.id;
     c.lastMessageFromMe = message.fromMe;
     c.lastMessageStatus = message.status;
+    c.lastMessagePartialRead = message.partialRead ?? false;
   });
 }
 
@@ -175,6 +176,7 @@ export function updateChatLastStatus(
   chatJid: string,
   id: string,
   status: WaMessageStatus,
+  partialRead?: boolean,
 ) {
   return chatsApi.util.updateQueryData('getChats', accountId, (draft) => {
     const c = draft.find((cc) => cc.jid === chatJid);
@@ -182,5 +184,7 @@ export function updateChatLastStatus(
     if (statusRank(status) >= statusRank(c.lastMessageStatus)) {
       c.lastMessageStatus = status;
     }
+    if (isReadStatus(c.lastMessageStatus)) c.lastMessagePartialRead = false;
+    else if (partialRead !== undefined) c.lastMessagePartialRead = partialRead;
   });
 }

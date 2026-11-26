@@ -1,5 +1,5 @@
 import { api } from '../../app/api';
-import { statusRank } from '../../lib/statusMark';
+import { isReadStatus, statusRank } from '../../lib/statusMark';
 import type {
   WaMessage,
   WaMessageInfoResponse,
@@ -112,14 +112,18 @@ export function updateMessageStatus(
   jid: string,
   id: string,
   status: WaMessageStatus,
+  partialRead?: boolean,
 ) {
   return messagesApi.util.updateQueryData(
     'getMessages',
     { accountId, jid },
     (draft) => {
       const m = draft.messages.find((mm) => mm.id === id);
+      if (!m) return;
       // Jamais de recul (accusés dans le désordre).
-      if (m && statusRank(status) >= statusRank(m.status)) m.status = status;
+      if (statusRank(status) >= statusRank(m.status)) m.status = status;
+      if (isReadStatus(m.status)) m.partialRead = false;
+      else if (partialRead !== undefined) m.partialRead = partialRead;
     },
   );
 }

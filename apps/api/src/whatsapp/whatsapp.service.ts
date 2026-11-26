@@ -115,6 +115,7 @@ export interface WhatsappEvents {
       id: string;
       chatJid: string;
       status: WaMessageStatus;
+      partialRead?: boolean;
     },
   ) => void;
   chats: (accountId: string, chats: WaChat[]) => void;
@@ -172,6 +173,10 @@ interface AccountSession {
   activeClients: Set<string>;
   // Derniers contacts suivis (présence), réabonnés au passage en ligne.
   presenceSubs: string[];
+  // Nombre de destinataires d'un groupe (membres hors toi), pour savoir si
+  // TOUS ont lu. Lu via groupMetadata (requête de lecture), gardé 30 min.
+  groupSizes: Map<string, { n: number; at: number }>;
+  groupSizeInflight: Map<string, Promise<number | null>>;
 }
 
 // Champs app-state posés localement puis renvoyés en écho par WhatsApp.
@@ -339,6 +344,8 @@ export class WhatsappService
         nameByJid: new Map(),
         activeClients: new Set(),
         presenceSubs: [],
+        groupSizes: new Map(),
+        groupSizeInflight: new Map(),
         blockedJids: new Set(),
         historySyncing: false,
         groupBackfillRunning: false,
@@ -744,6 +751,9 @@ export class WhatsappService
       // Une fois par compte : relit l'état « épinglé / archivé / lu » depuis
       // WhatsApp (laisse d'abord finir la synchro de connexion).
       setTimeout(() => void this.resyncChatStateOnce(accountId), 20_000);
+      // Coches de groupe posées « lues » au premier lecteur (avant ce
+      // correctif) : recalées une fois la synchro de connexion passée.
+      setTimeout(() => void this.repairGroupReadStatuses(accountId), 45_000);
       // Reconnexion pendant qu'un onglet est utilisé : repasser en ligne.
       if (s.activeClients.size > 0) void this.sendOnline(s, true);
     }
@@ -1177,15 +1187,27 @@ export class WhatsappService
     id: string,
     status: WaMessageStatus,
   ): Promise<void> {
-    const rank = statusRank(status);
+    let rank = statusRank(status);
     if (rank < 0) return;
     const row = await this.prisma.waMessage
       .findUnique({
         where: { accountId_chatJid_id: { accountId, chatJid, id } },
-        select: { status: true, fromMe: true, sentAt: true },
+        select: { status: true, fromMe: true, sentAt: true, receipts: true },
       })
       .catch(() => null);
     if (!row) return; // message pas encore en base
+    // Groupe : « lu » (bleu) seulement quand TOUS les membres ont lu. Avant,
+    // le message reste « distribué » ; partialRead (calculé des accusés)
+    // donne la coche bleue + grise dès qu'au moins un a lu.
+    if (
+      row.fromMe &&
+      isJidGroup(chatJid) &&
+      rank >= statusRank(WaMessageStatus.READ) &&
+      (await this.groupFullyRead(accountId, chatJid, row.receipts)) === false
+    ) {
+      status = WaMessageStatus.DELIVERED;
+      rank = statusRank(status);
+    }
     if (rank > statusRank(row.status as WaMessageStatus)) {
       await this.prisma.waMessage
         .update({
@@ -1331,13 +1353,9 @@ export class WhatsappService
       // L'accusé peut arriver sous le JID @lid alors que le message est stocké
       // sous le JID canonique (téléphone) -> on canonicalise.
       const chatJid = (await this.resolvePn(accountId, rawJid)) ?? rawJid;
-      await this.applyStatus(accountId, chatJid, id, status);
-      if (status === WaMessageStatus.READ || status === WaMessageStatus.PLAYED) {
-        readChats.add(chatJid);
-      }
-
       // Capture l'accusé PAR destinataire (panneau « Infos du message »).
-      // userJid identifie le destinataire (présent surtout en groupe).
+      // userJid identifie le destinataire (présent surtout en groupe). Fait
+      // AVANT applyStatus : en groupe, le « lu » dépend de tous les accusés.
       const userJid =
         (await this.resolvePn(accountId, receipt.userJid)) ?? receipt.userJid;
       if (userJid) {
@@ -1347,8 +1365,146 @@ export class WhatsappService
           playedAt: toMs(receipt.playedTimestamp),
         });
       }
+      await this.applyStatus(accountId, chatJid, id, status);
+      if (status === WaMessageStatus.READ || status === WaMessageStatus.PLAYED) {
+        readChats.add(chatJid);
+        // Groupe : la coche bleue + grise apparaît dès le premier lecteur.
+        if (isJidGroup(chatJid)) await this.emitGroupTicks(accountId, chatJid, id);
+      }
     }
     await this.reconcileUnread(accountId, [...readChats]);
+  }
+
+  // Messages de groupe marqués « lus » (coches bleues) alors que tous les
+  // membres n'ont pas lu : ramenés à « distribué » (bleu + gris à l'écran).
+  // 14 derniers jours, seulement ceux dont on a les accusés. Base locale.
+  private groupReadRepaired = new Set<string>();
+  private async repairGroupReadStatuses(accountId: string): Promise<void> {
+    if (this.groupReadRepaired.has(accountId)) return;
+    this.groupReadRepaired.add(accountId);
+    try {
+      const rows = await this.prisma.waMessage.findMany({
+        where: {
+          accountId,
+          fromMe: true,
+          chatJid: { endsWith: '@g.us' },
+          status: { in: [WaMessageStatus.READ, WaMessageStatus.PLAYED] },
+          sentAt: { gte: new Date(Date.now() - 14 * 86_400_000) },
+        },
+        select: { chatJid: true, id: true, receipts: true },
+        take: 3000,
+      });
+      const fix: { chatJid: string; id: string }[] = [];
+      for (const r of rows) {
+        if (!Array.isArray(r.receipts) || r.receipts.length === 0) continue;
+        if ((await this.groupFullyRead(accountId, r.chatJid, r.receipts)) === false) {
+          fix.push({ chatJid: r.chatJid, id: r.id });
+        }
+      }
+      for (const f of fix) {
+        await this.prisma.waMessage
+          .update({
+            where: { accountId_chatJid_id: { accountId, chatJid: f.chatJid, id: f.id } },
+            data: { status: WaMessageStatus.DELIVERED },
+          })
+          .catch(() => undefined);
+      }
+      if (fix.length > 0) {
+        this.logger.log(`coches de groupe recalées (${fix.length} messages) [${accountId}]`);
+      }
+    } catch (e) {
+      this.groupReadRepaired.delete(accountId);
+      this.logger.warn(`repairGroupReadStatuses: ${e}`);
+    }
+  }
+
+  // Membres d'un groupe hors toi (destinataires d'un message), ou null si
+  // inconnu (WhatsApp injoignable). Requête de lecture, mise en cache.
+  private async groupRecipientCount(
+    accountId: string,
+    jid: string,
+  ): Promise<number | null> {
+    const s = this.ensureSession(accountId);
+    const hit = s.groupSizes.get(jid);
+    if (hit && Date.now() - hit.at < 30 * 60_000) return hit.n;
+    const pending = s.groupSizeInflight.get(jid);
+    if (pending) return pending;
+    if (!s.sock || s.connection.state !== ConnectionState.OPEN) return hit?.n ?? null;
+    const sock = s.sock;
+    const p = (async () => {
+      try {
+        const meta = await this.withTimeout(
+          sock.groupMetadata(jid),
+          WhatsappService.REACTION_TIMEOUT_MS,
+        );
+        const n = Math.max(0, (meta.participants?.length ?? 0) - 1);
+        s.groupSizes.set(jid, { n, at: Date.now() });
+        return n;
+      } catch (e) {
+        this.logger.warn(`taille du groupe ${jid}: ${e}`);
+        return hit?.n ?? null;
+      } finally {
+        s.groupSizeInflight.delete(jid);
+      }
+    })();
+    s.groupSizeInflight.set(jid, p);
+    return p;
+  }
+
+  // Lecteurs (lu ou écouté) d'après les accusés stockés.
+  private readersOf(receipts: unknown): number {
+    const list = Array.isArray(receipts) ? (receipts as WaMessageReceipt[]) : [];
+    return list.filter((r) => r.readAt != null || r.playedAt != null).length;
+  }
+
+  // Tous les membres ont-ils lu ? null = taille du groupe inconnue (on garde
+  // alors le statut annoncé par WhatsApp).
+  private async groupFullyRead(
+    accountId: string,
+    jid: string,
+    receipts: unknown,
+  ): Promise<boolean | null> {
+    const n = await this.groupRecipientCount(accountId, jid);
+    if (n == null || n === 0) return null;
+    return this.readersOf(receipts) >= n;
+  }
+
+  // Pousse au web les coches d'un message de groupe (statut + lu partiel).
+  private async emitGroupTicks(
+    accountId: string,
+    chatJid: string,
+    id: string,
+  ): Promise<void> {
+    const row = await this.prisma.waMessage
+      .findUnique({
+        where: { accountId_chatJid_id: { accountId, chatJid, id } },
+        select: { status: true, fromMe: true, receipts: true },
+      })
+      .catch(() => null);
+    if (!row?.fromMe) return;
+    const status = row.status as WaMessageStatus;
+    this.emit('message-status', accountId, {
+      id,
+      chatJid,
+      status,
+      partialRead: this.isPartialRead(chatJid, true, status, row.receipts),
+    });
+  }
+
+  // Groupe : lu par au moins un membre mais pas (encore) par tous.
+  private isPartialRead(
+    chatJid: string,
+    fromMe: boolean,
+    status: WaMessageStatus,
+    receipts: unknown,
+  ): boolean {
+    return (
+      fromMe &&
+      isJidGroup(chatJid) === true &&
+      statusRank(status) < statusRank(WaMessageStatus.READ) &&
+      statusRank(status) >= statusRank(WaMessageStatus.SENT) &&
+      this.readersOf(receipts) > 0
+    );
   }
 
   // Fusionne un accusé par destinataire dans la colonne JSON `receipts`.
@@ -3281,9 +3437,15 @@ export class WhatsappService
     const jids = kept.map((r) => r.jid);
     const lasts = jids.length
       ? await this.prisma.$queryRaw<
-          { chat_jid: string; id: string; from_me: boolean; status: string }[]
+          {
+            chat_jid: string;
+            id: string;
+            from_me: boolean;
+            status: string;
+            receipts: unknown;
+          }[]
         >`
-          SELECT DISTINCT ON (chat_jid) chat_jid, id, from_me, status
+          SELECT DISTINCT ON (chat_jid) chat_jid, id, from_me, status, receipts
           FROM wa_messages
           WHERE account_id = ${accountId} AND chat_jid IN (${Prisma.join(jids)})
           ORDER BY chat_jid, sent_at DESC`.catch(() => [])
@@ -3297,6 +3459,9 @@ export class WhatsappService
         lastMessageId: l?.id ?? null,
         lastMessageFromMe: l?.from_me ?? false,
         lastMessageStatus: (l?.status as WaMessageStatus | undefined) ?? null,
+        lastMessagePartialRead: l
+          ? this.isPartialRead(r.jid, l.from_me, l.status as WaMessageStatus, l.receipts)
+          : false,
       };
     });
   }
@@ -4539,6 +4704,7 @@ export class WhatsappService
       clientId: string | null;
       editedAt?: Date | null;
       starred?: boolean;
+      receipts?: unknown;
     },
   ): WaMessage {
     const dto: WaMessage = {
@@ -4558,6 +4724,9 @@ export class WhatsappService
       clientId: row.clientId,
       ...(row.editedAt ? { edited: true } : {}),
       ...(row.starred ? { starred: true } : {}),
+      ...(this.isPartialRead(row.chatJid, row.fromMe, row.status as WaMessageStatus, row.receipts)
+        ? { partialRead: true }
+        : {}),
     };
     // URL backend du média (servie déchiffrée à la demande).
     this.attachMediaUrl(dto);

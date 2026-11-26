@@ -106,7 +106,12 @@ export class WhatsappGateway
         'message-status',
         (
           accountId: string,
-          p: { id: string; chatJid: string; status: WaMessageStatus },
+          p: {
+            id: string;
+            chatJid: string;
+            status: WaMessageStatus;
+            partialRead?: boolean;
+          },
         ) => this.server.emit('wa:message-status', { accountId, ...p }),
       );
       this.wa.on('chats', (accountId: string, chats: WaChat[]) =>

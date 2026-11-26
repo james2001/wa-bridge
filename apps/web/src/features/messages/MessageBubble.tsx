@@ -3,7 +3,7 @@ import { WaMessageStatus, WaMessageType } from '@app/shared-types';
 import type { WaMessage, WaReaction } from '@app/shared-types';
 import { formatTime } from '../../lib/format';
 import { formatWhatsappText } from '../../lib/formatText';
-import { statusMark } from '../../lib/statusMark';
+import Ticks from '../../components/Ticks';
 import MediaContent from './MediaContent';
 import MessageInfoModal from './MessageInfoModal';
 import DeleteMessageModal from './DeleteMessageModal';
@@ -150,9 +150,6 @@ export default function MessageBubble({
   const isOwn = message.fromMe;
   // Panneau « Infos du message » (accusés de réception), messages sortants.
   const [infoOpen, setInfoOpen] = useState(false);
-  const isRead =
-    message.status === WaMessageStatus.READ ||
-    message.status === WaMessageStatus.PLAYED;
   const isFailed = message.status === WaMessageStatus.ERROR;
   // Quand un média est présent, MediaContent prend le relais (rendu réel +
   // légende). Sinon on retombe sur le placeholder texte (location, contact…).
@@ -417,13 +414,11 @@ export default function MessageBubble({
           {message.edited && <span className="bubble__edited">modifié</span>}
           <span className="bubble__time">{formatTime(message.timestamp)}</span>
           {isOwn && (
-            <span
-              className={
-                'bubble__check' + (isRead ? ' bubble__check--read' : '')
-              }
-            >
-              {statusMark(message.status)}
-            </span>
+            <Ticks
+              className="bubble__check"
+              status={message.status}
+              partialRead={message.partialRead}
+            />
           )}
         </span>
         {showAccount && accountLabel && (

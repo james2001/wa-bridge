@@ -85,6 +85,7 @@ export interface WaChat {
   lastMessageId?: string | null;
   lastMessageFromMe?: boolean;
   lastMessageStatus?: WaMessageStatus | null;
+  lastMessagePartialRead?: boolean;
   pinned: boolean;
   archived: boolean;
   muted: boolean;
@@ -157,6 +158,9 @@ export interface WaMessage {
   clientId: string | null; // corrélation avec l'écho optimistic
   edited?: boolean; // texte modifié après envoi
   starred?: boolean; // message important (étoile)
+  // Groupe : lu par au moins un membre mais pas par tous -> une coche bleue,
+  // une grise (le double bleu attend que tous aient lu).
+  partialRead?: boolean;
 }
 
 // --- REST ---
