@@ -12,6 +12,9 @@ import { useGetGroupInfoQuery } from '../chats/chatsApi';
 
 const EmojiPanel = lazy(() => import('../../components/EmojiPanel'));
 
+// Échappe une chaîne pour l'insérer telle quelle dans une RegExp.
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 // Trombone (icône vectorielle : l'emoji 📎 varie trop selon les systèmes).
 function PaperclipIcon() {
   return (
@@ -48,7 +51,10 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
   const [sender, setSender] = useState(accountId);
   // Brouillon par discussion : repris à l'ouverture, gardé à chaque frappe.
   const dKey = draftKey(merged ? 'merged' : accountId, chatJid);
-  const [text, setText] = useState(() => getDraft(dKey));
+  const [draftText, setDraftText] = useState(() => getDraft(dKey));
+  // Texte d'un message en cours de modification : état séparé, pour que le
+  // brouillon ne soit jamais écrasé (ni renvoyé) en passant d'édition à réponse.
+  const [editText, setEditText] = useState('');
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState(false);
@@ -57,6 +63,7 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const emojiBtnRef = useRef<HTMLButtonElement | null>(null);
 
   // Réponse en cours (citation) pour CETTE discussion uniquement.
   const action = useAppSelector(selectComposerAction);
@@ -69,10 +76,12 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
     action?.kind === 'edit' && action.chatJid === chatJid
       ? action.message
       : null;
+  // Saisie affichée : le message modifié, sinon le brouillon. Quitter
+  // l'édition (annuler, valider, ou passer à une réponse) ramène le brouillon.
+  const text = editing ? editText : draftText;
+  const setText = editing ? setEditText : setDraftText;
   const [actionError, setActionError] = useState<string | null>(null);
   const cancelAction = () => {
-    // Fin de modification : on retrouve le brouillon d'avant.
-    if (editing) setText(getDraft(dKey));
     setActionError(null);
     dispatch(setComposerAction(null));
   };
@@ -81,7 +90,7 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
   useEffect(() => {
     if (!editing) return;
     setActionError(null);
-    setText(editing.text ?? '');
+    setEditText(editing.text ?? '');
     requestAnimationFrame(() => {
       const el = inputRef.current;
       if (!el) return;
@@ -143,10 +152,10 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
     if (merged) dispatch(upsertPersonMessage(msg));
   };
 
-  // Le texte en cours de modification d'un message n'est pas un brouillon.
+  // Brouillon gardé à chaque frappe (le texte d'une modification n'en est pas un).
   useEffect(() => {
-    if (!editing) setDraft(dKey, text);
-  }, [text, editing, dKey]);
+    setDraft(dKey, draftText);
+  }, [draftText, dKey]);
 
   // Hauteur du champ ajustée au contenu (plafonnée en CSS par max-height).
   useEffect(() => {
@@ -211,13 +220,19 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
   };
 
   // Texte réellement envoyé : « @Nom » -> « @numéro », + JIDs mentionnés.
+  // Libellés les plus longs d'abord (« @Marc Dupont » avant « @Marc ») et
+  // jamais au milieu d'un mot (« @Marc » ne touche pas « @Marcel »).
   const withMentions = (value: string): { text: string; mentions: string[] } => {
     let out = value;
     const mentions: string[] = [];
-    for (const [label, jid] of mentionsRef.current) {
-      const tag = `@${label}`;
-      if (!out.includes(tag)) continue;
-      out = out.split(tag).join(`@${jid.split('@')[0]}`);
+    const entries = [...mentionsRef.current].sort(
+      (a, b) => b[0].length - a[0].length,
+    );
+    for (const [label, jid] of entries) {
+      const re = new RegExp(`@${escapeRegExp(label)}(?![\\p{L}\\p{N}_])`, 'gu');
+      const next = out.replace(re, `@${jid.split('@')[0]}`);
+      if (next === out) continue;
+      out = next;
       mentions.push(jid);
     }
     return { text: out, mentions };
@@ -265,7 +280,6 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
           value,
         );
         if (ack.ok) {
-          setText(getDraft(dKey));
           dispatch(setComposerAction(null));
         } else {
           setActionError(ack.error ?? 'Échec de la modification');
@@ -442,6 +456,7 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
       />
       <div className="composer__emoji">
         <button
+          ref={emojiBtnRef}
           className="composer__attach"
           type="button"
           onClick={() => setEmojiOpen((v) => !v)}
@@ -455,6 +470,7 @@ export default function Composer({ chatJid, accountId, accountOptions }: Props) 
           <Suspense fallback={null}>
             <EmojiPanel
               className="emojipanel--composer"
+              triggerRef={emojiBtnRef}
               onPick={insertEmoji}
               onClose={() => setEmojiOpen(false)}
             />

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type RefObject } from 'react';
 import EmojiPicker, {
   Categories,
   EmojiStyle,
@@ -12,6 +12,9 @@ interface Props {
   // Mode réaction : barre d'emojis rapides, « + » pour la liste complète.
   reactions?: boolean;
   className?: string;
+  // Bouton qui ouvre/ferme le panneau : un clic dessus est laissé à son
+  // onClick (sinon mousedown fermerait, puis le clic rouvrirait aussitôt).
+  triggerRef?: RefObject<HTMLElement | null>;
 }
 
 // Libellés français des catégories (la bibliothèque est en anglais).
@@ -32,15 +35,27 @@ const QUICK_REACTIONS = ['1f44d', '2764-fe0f', '1f602', '1f62e', '1f622', '1f64f
 
 // Sélecteur d'emojis en popover : se ferme sur Échap ou clic à l'extérieur.
 // Emojis natifs (aucune image chargée depuis un CDN).
-export default function EmojiPanel({ onPick, onClose, reactions, className }: Props) {
+export default function EmojiPanel({
+  onPick,
+  onClose,
+  reactions,
+  className,
+  triggerRef,
+}: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
+  // onClose est souvent une fonction inline : la lire via une ref évite de
+  // réabonner les écouteurs à chaque rendu du parent.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+      const target = e.target as Node;
+      if (triggerRef?.current?.contains(target)) return;
+      if (ref.current && !ref.current.contains(target)) closeRef.current();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') closeRef.current();
     };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
@@ -48,7 +63,7 @@ export default function EmojiPanel({ onPick, onClose, reactions, className }: Pr
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [onClose]);
+  }, [triggerRef]);
 
   const dark = document.documentElement.dataset.theme === 'dark';
   const pick = (d: EmojiClickData) => onPick(d.emoji);

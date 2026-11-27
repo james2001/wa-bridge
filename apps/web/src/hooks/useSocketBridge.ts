@@ -89,12 +89,19 @@ export function useSocketBridge(): void {
         api.util.invalidateTags([{ type: 'WaCommunities', id: p.accountId }]),
       );
     };
-    const onMessage = (p: { accountId: string; message: WaMessage }) => {
-      // Notification locale (onglet en arrière-plan) — avant la mise à jour
-      // du cache, qui ne change ni le nom ni l'état muet de la discussion.
-      const chat = chatsApi.endpoints.getChats
-        .select(p.accountId)(store.getState())
-        .data?.find((c) => c.jid === p.message.chatJid);
+    const onMessage = (p: {
+      accountId: string;
+      message: WaMessage;
+      chat?: WaChat;
+    }) => {
+      // Notification locale (onglet en arrière-plan). La discussion jointe par
+      // le serveur fait foi (nom, sourdine) : la liste en cache n'existe que
+      // pour le compte affiché. Repli sur le cache pour les autres événements.
+      const chat =
+        p.chat ??
+        chatsApi.endpoints.getChats
+          .select(p.accountId)(store.getState())
+          .data?.find((c) => c.jid === p.message.chatJid);
       notifyIncoming(p.message, {
         chat,
         onOpen: () => {

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useRef, useState } from 'react';
 import { WaMessageStatus, WaMessageType } from '@app/shared-types';
 import type { WaMessage, WaReaction } from '@app/shared-types';
 import { formatTime } from '../../lib/format';
@@ -189,6 +189,7 @@ export default function MessageBubble({
   // Réactions : seulement sur un message réellement envoyé/reçu (pas l'écho
   // optimistic en attente, ni un message en échec ou système).
   const [pickerOpen, setPickerOpen] = useState(false);
+  const reactBtnRef = useRef<HTMLButtonElement | null>(null);
   const [reactError, setReactError] = useState<string | null>(null);
   const canReact =
     message.status !== WaMessageStatus.PENDING &&
@@ -237,6 +238,7 @@ export default function MessageBubble({
           {canReact && (
           <>
           <button
+            ref={reactBtnRef}
             type="button"
             className="react-trigger"
             title="Réagir"
@@ -332,6 +334,7 @@ export default function MessageBubble({
             <Suspense fallback={null}>
               <EmojiPanel
                 reactions
+                triggerRef={reactBtnRef}
                 className="emojipanel--react"
                 onPick={onReact}
                 onClose={() => setPickerOpen(false)}

@@ -90,8 +90,14 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
       this.wa.on('connection', (_accountId: string, conn: WaConnection) =>
         this.server.emit('wa:connection', conn),
       );
-      this.wa.on('message', (accountId: string, message: WaMessage) =>
-        this.server.emit('wa:message', { accountId, message }),
+      this.wa.on(
+        'message',
+        (accountId: string, message: WaMessage, chat?: WaChat | null) =>
+          this.server.emit('wa:message', {
+            accountId,
+            message,
+            ...(chat ? { chat } : {}),
+          }),
       );
       this.wa.on(
         'message-status',

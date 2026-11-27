@@ -77,13 +77,16 @@ const cleanName = (s: unknown): string | null => {
   return t.length > 0 ? t : null;
 };
 
+// Échappe une chaîne pour l'insérer telle quelle dans une RegExp.
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 // Événements domaine émis par le service (consommés par la gateway). Chaque
 // signature porte `accountId` en 1er argument (routage multi-compte).
 export interface WhatsappEvents {
   // Liste des comptes changée (ajout / suppression / renommage).
   accounts: (p: WaAccountsResponse) => void;
   connection: (accountId: string, conn: WaConnection) => void;
-  message: (accountId: string, msg: WaMessage) => void;
+  message: (accountId: string, msg: WaMessage, chat?: WaChat | null) => void;
   'message-status': (
     accountId: string,
     p: {
@@ -885,7 +888,7 @@ export class WhatsappService
       );
       this.attachMediaUrl(msg);
       const chat = await this.touchChat(accountId, msg, isNewIncoming);
-      this.emit('message', accountId, msg);
+      this.emit('message', accountId, msg, chat);
       if (chat) this.emit('chat-upsert', accountId, chat);
     }
   }
@@ -1463,7 +1466,14 @@ export class WhatsappService
       ) {
         continue; // plus rien à écrire après suppression de l'écho gardé
       }
-      const unread = hasUnread ? Math.max(0, ch.unreadCount as number) : undefined;
+      // -1 = « marquée non lue » (pastille sans nombre), posé par WhatsApp
+      // (markChatAsRead read=false) et par markUnread : on le garde. Les autres
+      // valeurs négatives sont ramenées à 0.
+      const unread = hasUnread
+        ? ch.unreadCount === -1
+          ? -1
+          : Math.max(0, ch.unreadCount as number)
+        : undefined;
       const name = await this.chatDisplayName(accountId, jid, ch.name);
       const row = await this.prisma.waChat
         .upsert({
@@ -1906,17 +1916,54 @@ export class WhatsappService
     if (Date.now() - row.sentAt.getTime() > WhatsappService.EDIT_WINDOW_MS) {
       throw new Error('Délai de modification dépassé (15 min)');
     }
-    if (row.text === text) return; // rien à changer
+    // Le texte édité est celui AFFICHÉ (« @Nom ») : on remet les « @numéro »
+    // d'origine et la liste des mentions, sinon elles deviennent du texte brut.
+    const wire = this.restoreMentions(accountId, row.text, text);
+    if (row.text === wire.text) return; // rien à changer
+    const mentions = isJidGroup(jid) ? wire.mentions : [];
     await this.withTimeout(
       s.sock.sendMessage(jid, {
-        text,
+        text: wire.text,
+        ...(mentions.length ? { mentions } : {}),
         edit: { remoteJid: jid, id: row.id, fromMe: true },
       }),
       WhatsappService.REACTION_TIMEOUT_MS,
     );
     // Reflète tout de suite (l'écho WhatsApp refera la même chose).
-    await this.applyEdit(accountId, jid, row.id, text);
+    await this.applyEdit(accountId, jid, row.id, wire.text);
     await this.refreshChatPreview(accountId, jid, true);
+  }
+
+  // Inverse de resolveMentions pour une édition : chaque « @<numéro> » du texte
+  // d'origine affiché « @<nom> » est remis en « @<numéro> » dans le nouveau
+  // texte. Libellés les plus longs d'abord (« @Marc Dupont » avant « @Marc »),
+  // jamais au milieu d'un mot. Renvoie aussi les JIDs encore mentionnés.
+  private restoreMentions(
+    accountId: string,
+    original: string | null,
+    edited: string,
+  ): { text: string; mentions: string[] } {
+    const nums = new Set<string>();
+    for (const m of (original ?? '').matchAll(WhatsappService.MENTION_RE)) {
+      nums.add(m[1]);
+    }
+    if (!nums.size) return { text: edited, mentions: [] };
+    const labels = [...nums]
+      .map((num) => ({ num, name: this.mentionDisplay(accountId, num) }))
+      .filter((x): x is { num: string; name: string } => Boolean(x.name))
+      .sort((a, b) => b.name.length - a.name.length);
+    let out = edited;
+    for (const { num, name } of labels) {
+      const re = new RegExp(`@${escapeRegExp(name)}(?![\\p{L}\\p{N}_])`, 'gu');
+      out = out.replace(re, `@${num}`);
+    }
+    const s = this.ensureSession(accountId);
+    const mentions = [...nums]
+      .filter((num) => new RegExp(`@${num}(?!\\d)`).test(out))
+      .map((num) =>
+        s.lidToPn.has(`${num}@lid`) ? `${num}@lid` : `${num}@s.whatsapp.net`,
+      );
+    return { text: out, mentions };
   }
 
   // Supprime un message.
@@ -2041,7 +2088,8 @@ export class WhatsappService
     messageId: string,
     toJid: string,
   ): Promise<WaMessage> {
-    if (!/^[0-9]+@(s\.whatsapp\.net|g\.us|lid)$/.test(toJid)) {
+    // Anciens groupes : JID « <numéro>-<horodatage>@g.us ».
+    if (!/^(?:[0-9]+@(?:s\.whatsapp\.net|lid)|[0-9]+(?:-[0-9]+)?@g\.us)$/.test(toJid)) {
       throw new Error('Destinataire invalide');
     }
     const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
@@ -2089,7 +2137,10 @@ export class WhatsappService
     // Hors liants (ZWJ, VS16) : seulement pictogrammes, drapeaux, teintes de
     // peau et tags. Rien d'autre.
     const core = text.replace(/\u200d|\ufe0f/gu, '');
+    // Touches num\u00e9rot\u00e9es (keycaps) : chiffre, # ou * suivi de U+20E3.
+    const isKeycap = /^[0-9#*]\u20e3$/u.test(core);
     const isEmoji =
+      isKeycap ||
       /^[\p{Extended_Pictographic}\p{Regional_Indicator}\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}]+$/u.test(
         core,
       ) &&
@@ -2261,17 +2312,7 @@ export class WhatsappService
     if (row) this.emit('chat-upsert', accountId, this.chatRowToDto(accountId, row));
     // 2) Synchro WhatsApp en best-effort (NE PAS bloquer/awaiter: chatModify
     //    peut traîner ou ne jamais répondre selon l'état app-state).
-    const last = await this.prisma.waMessage
-      .findFirst({ where: { accountId, chatJid: jid }, orderBy: { sentAt: 'desc' } })
-      .catch(() => null);
-    const lastMessages = last
-      ? [
-          {
-            key: { remoteJid: jid, id: last.id, fromMe: last.fromMe },
-            messageTimestamp: Math.floor(last.sentAt.getTime() / 1000),
-          },
-        ]
-      : [];
+    const lastMessages = await this.lastMessagesFor(accountId, jid);
     void this.syncChatModify(
       accountId,
       jid,
@@ -2304,22 +2345,41 @@ export class WhatsappService
   }
 
   // Dernier message d'une discussion au format attendu par chatModify
-  // (archive, lu/non lu, suppression de discussion).
+  // (archive, lu/non lu, suppression de discussion). En groupe, Baileys exige
+  // l'auteur (participant) d'un message reçu, sinon il rejette toute la
+  // mutation : on prend le dernier message dont l'auteur est connu.
   private async lastMessagesFor(
     accountId: string,
     jid: string,
-  ): Promise<{ key: { remoteJid: string; id: string; fromMe: boolean }; messageTimestamp: number }[]> {
+  ): Promise<
+    {
+      key: { remoteJid: string; id: string; fromMe: boolean; participant?: string };
+      messageTimestamp: number;
+    }[]
+  > {
+    const group = isJidGroup(jid) ?? false;
     const last = await this.prisma.waMessage
       .findFirst({
-        where: { accountId, chatJid: jid },
-        orderBy: { sentAt: 'desc' },
-        select: { id: true, fromMe: true, sentAt: true },
+        where: {
+          accountId,
+          chatJid: jid,
+          ...(group ? { OR: [{ fromMe: true }, { senderJid: { not: null } }] } : {}),
+        },
+        orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }],
+        select: { id: true, fromMe: true, senderJid: true, sentAt: true },
       })
       .catch(() => null);
     return last
       ? [
           {
-            key: { remoteJid: jid, id: last.id, fromMe: last.fromMe },
+            key: {
+              remoteJid: jid,
+              id: last.id,
+              fromMe: last.fromMe,
+              ...(group && !last.fromMe && last.senderJid
+                ? { participant: last.senderJid }
+                : {}),
+            },
             messageTimestamp: Math.floor(last.sentAt.getTime() / 1000),
           },
         ]
@@ -2428,8 +2488,11 @@ export class WhatsappService
   ): Promise<void> {
     const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
     if (pinned) {
-      const count = await this.prisma.waChat
-        .count({ where: { accountId, pinned: true, NOT: { jid } } })
+      // Compté sur la liste VISIBLE (mêmes filtres que listChats, comme le
+      // front) : une discussion épinglée mais masquée (vide, ignorée...) ne
+      // doit pas bloquer un épinglage que l'interface autorise.
+      const count = await this.listChats(accountId)
+        .then((chats) => chats.filter((c) => c.pinned && c.jid !== jid).length)
         .catch(() => 0);
       if (count >= WhatsappService.MAX_PINNED) {
         this.logger.warn(`pin refusé ${jid}: déjà ${count} épinglées`);
@@ -2476,10 +2539,14 @@ export class WhatsappService
           WhatsappService.CHAT_STATE_RESYNC_TIMEOUT_MS,
         );
       } finally {
+        // resyncAppState est une fonction « bufferisée » de Baileys : ses
+        // chats.update ne sont diffusés qu'au flush, ~100 ms APRÈS sa
+        // résolution. Le filtre (épinglage seul) doit rester actif jusque-là,
+        // sinon d'anciens « lu » / « archivé » écrasent l'état réel. L'attente
+        // laisse aussi les handlers asynchrones écrire en base.
+        await new Promise((r) => setTimeout(r, 3_000));
         s.chatStateReplay = false;
       }
-      // Laisse les handlers asynchrones (déclenchés au flush) écrire en base.
-      await new Promise((r) => setTimeout(r, 3_000));
       await writeFile(mark, new Date().toISOString());
       const pinned = await this.prisma.waChat
         .count({ where: { accountId, pinned: true } })
@@ -3589,7 +3656,7 @@ export class WhatsappService
     const existing = await this.prisma.waChat
       .findUnique({
         where: { accountId_jid: { accountId, jid: m.chatJid } },
-        select: { lastMessageAt: true },
+        select: { lastMessageAt: true, unreadCount: true },
       })
       .catch(() => null);
     let at = latest?.at ?? msgAt;
@@ -3612,7 +3679,13 @@ export class WhatsappService
           lastMessageAt: at,
           lastMessagePreview: preview,
           name: name ?? undefined,
-          ...(incrementUnread ? { unreadCount: { increment: 1 } } : {}),
+          // -1 (« marquée non lue ») + nouveau message = 1, pas 0.
+          ...(incrementUnread
+            ? {
+                unreadCount:
+                  (existing?.unreadCount ?? 0) < 0 ? 1 : { increment: 1 },
+              }
+            : {}),
         },
       })
       .catch(() => null);
@@ -3624,10 +3697,12 @@ export class WhatsappService
     accountId: string,
     chatJid: string,
   ): Promise<{ at: Date; preview: string | null } | null> {
+    // sentAt est à la seconde (horodatage WhatsApp) : à égalité, le dernier
+    // enregistré gagne.
     const last = await this.prisma.waMessage
       .findFirst({
         where: { accountId, chatJid },
-        orderBy: { sentAt: 'desc' },
+        orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }],
       })
       .catch(() => null);
     if (!last) return null;
@@ -3650,7 +3725,18 @@ export class WhatsappService
     emit = false,
   ): Promise<void> {
     const latest = await this.latestMessageOf(accountId, chatJid);
-    if (!latest) return;
+    if (!latest) {
+      // Plus aucun message (« supprimer pour moi » du dernier) : l'aperçu ne
+      // doit pas continuer d'afficher le texte supprimé.
+      const res = await this.prisma.waChat
+        .updateMany({
+          where: { accountId, jid: chatJid, lastMessagePreview: { not: null } },
+          data: { lastMessagePreview: null },
+        })
+        .catch(() => null);
+      if (res?.count && emit) await this.emitChatRefresh(accountId, chatJid);
+      return;
+    }
     const cur = await this.prisma.waChat
       .findUnique({
         where: { accountId_jid: { accountId, jid: chatJid } },
@@ -3668,15 +3754,20 @@ export class WhatsappService
     ) {
       return; // déjà juste
     }
-    const row = await this.prisma.waChat
-      .update({
-        where: { accountId_jid: { accountId, jid: chatJid } },
+    // Écriture conditionnelle : si un message plus récent a mis à jour la
+    // discussion entre la lecture et ici (touchChat), on ne l'écrase pas.
+    const res = await this.prisma.waChat
+      .updateMany({
+        where: {
+          accountId,
+          jid: chatJid,
+          lastMessageAt: cur.lastMessageAt,
+          lastMessagePreview: cur.lastMessagePreview,
+        },
         data: { lastMessageAt: at, lastMessagePreview: latest.preview },
       })
       .catch(() => null);
-    if (row && emit) {
-      this.emit('chat-upsert', accountId, this.chatRowToDto(accountId, row));
-    }
+    if (res?.count && emit) await this.emitChatRefresh(accountId, chatJid);
   }
 
   // Passe sur toutes les discussions ayant des messages (au démarrage).
