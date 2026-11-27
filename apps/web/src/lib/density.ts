@@ -1,8 +1,8 @@
 import { useSyncExternalStore } from 'react';
 
-// Affichage de la colonne de gauche : normal, ou compact pour les petits
-// écrans (en-tête sur une ligne, discussions plus serrées). Choix mémorisé
-// dans le navigateur, appliqué via <html data-density="..."> (cf. global.css).
+// Affichage de la colonne de gauche : compact par défaut (en-tête sur une
+// ligne, discussions plus serrées), ou normal. Choix mémorisé dans le
+// navigateur, appliqué via <html data-density="..."> (cf. global.css).
 
 export type Density = 'normal' | 'compact';
 
@@ -11,9 +11,9 @@ const listeners = new Set<() => void>();
 
 function stored(): Density {
   try {
-    return localStorage.getItem(STORAGE_KEY) === 'compact' ? 'compact' : 'normal';
+    return localStorage.getItem(STORAGE_KEY) === 'normal' ? 'normal' : 'compact';
   } catch {
-    return 'normal'; // stockage bloqué : affichage normal
+    return 'compact'; // stockage bloqué : affichage par défaut
   }
 }
 
