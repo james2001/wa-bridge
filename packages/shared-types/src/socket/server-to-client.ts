@@ -27,8 +27,9 @@ export interface ServerToClientEvents {
   // Une communauté a changé (création / renommage) : le client refetch la liste.
   'wa:community': (p: { accountId: string }) => void;
 
-  // Nouveau message (entrant ou écho d'un envoi).
-  'wa:message': (p: { accountId: string; message: WaMessage }) => void;
+  // Nouveau message (entrant ou écho d'un envoi). `chat` : la discussion à
+  // jour (nom, sourdine), pour notifier même si sa liste n'est pas en cache.
+  'wa:message': (p: { accountId: string; message: WaMessage; chat?: WaChat }) => void;
 
   // Mise à jour du statut d'un message (sent/delivered/read…).
   'wa:message-status': (p: {
@@ -38,7 +39,7 @@ export interface ServerToClientEvents {
     status: WaMessageStatus;
   }) => void;
 
-  // Message révoqué/supprimé pour tout le monde (typé, non émis aujourd'hui).
+  // Message supprimé « pour moi » : à retirer de l'affichage.
   'wa:message-deleted': (p: {
     accountId: string;
     id: string;

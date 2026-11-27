@@ -52,6 +52,7 @@ export interface SendTextInput {
   text: string;
   clientId: string;
   quotedId?: string;
+  mentions?: string[];
 }
 
 export interface SendTextAck {
@@ -73,6 +74,80 @@ export function sendText(input: SendTextInput): Promise<SendTextAck> {
       // accountId par défaut 'default' ; un appelant peut le surcharger.
       { accountId: DEFAULT_ACCOUNT_ID, ...input },
       (err: Error | null, ack: SendTextAck) => {
+        if (err) reject(err);
+        else resolve(ack);
+      },
+    );
+  });
+}
+
+// Modifie le texte d'un de ses messages. Refuse si le socket est coupé.
+export function editMessage(
+  accountId: string,
+  chatJid: string,
+  messageId: string,
+  text: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    const s = socket;
+    if (!s || !s.connected) {
+      reject(new Error('Socket non connecté'));
+      return;
+    }
+    s.timeout(20_000).emit(
+      'wa:edit',
+      { accountId, chatJid, messageId, text },
+      (err: Error | null, ack: { ok: boolean; error?: string }) => {
+        if (err) reject(err);
+        else resolve(ack);
+      },
+    );
+  });
+}
+
+// Supprime un message ('me' = pour moi, 'everyone' = pour tout le monde).
+// Refuse si le socket est coupé (jamais mis en file).
+export function deleteMessage(
+  accountId: string,
+  chatJid: string,
+  messageId: string,
+  scope: 'me' | 'everyone',
+): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    const s = socket;
+    if (!s || !s.connected) {
+      reject(new Error('Socket non connecté'));
+      return;
+    }
+    s.timeout(20_000).emit(
+      'wa:delete',
+      { accountId, chatJid, messageId, scope },
+      (err: Error | null, ack: { ok: boolean; error?: string }) => {
+        if (err) reject(err);
+        else resolve(ack);
+      },
+    );
+  });
+}
+
+// Réagit à un message ('' = retire sa réaction). Refuse si le socket est
+// coupé (pas de mise en file : une réaction n'est envoyée qu'au clic).
+export function reactToMessage(
+  accountId: string,
+  chatJid: string,
+  messageId: string,
+  emoji: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    const s = socket;
+    if (!s || !s.connected) {
+      reject(new Error('Socket non connecté'));
+      return;
+    }
+    s.timeout(20_000).emit(
+      'wa:react',
+      { accountId, chatJid, messageId, emoji },
+      (err: Error | null, ack: { ok: boolean; error?: string }) => {
         if (err) reject(err);
         else resolve(ack);
       },
@@ -106,6 +181,98 @@ export function archiveChat(
   archived: boolean,
 ): void {
   socket?.emit('wa:archive', { accountId, chatJid, archived });
+}
+
+// Marque / retire un message des « importants » (étoile).
+export function starMessage(
+  accountId: string,
+  chatJid: string,
+  messageId: string,
+  starred: boolean,
+): void {
+  socket?.emit('wa:star', { accountId, chatJid, messageId, starred });
+}
+
+// Transfère un message vers une discussion. Refuse si le socket est coupé.
+export function forwardMessage(
+  accountId: string,
+  chatJid: string,
+  messageId: string,
+  toJid: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    const s = socket;
+    if (!s || !s.connected) {
+      reject(new Error('Socket non connecté'));
+      return;
+    }
+    s.timeout(60_000).emit(
+      'wa:forward',
+      { accountId, chatJid, messageId, toJid },
+      (err: Error | null, ack: { ok: boolean; error?: string }) => {
+        if (err) reject(err);
+        else resolve(ack);
+      },
+    );
+  });
+}
+
+// Quitte un groupe. Refuse si le socket est coupé.
+export function leaveGroup(
+  accountId: string,
+  chatJid: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    const s = socket;
+    if (!s || !s.connected) {
+      reject(new Error('Socket non connecté'));
+      return;
+    }
+    s.timeout(20_000).emit(
+      'wa:group-leave',
+      { accountId, chatJid },
+      (err: Error | null, ack: { ok: boolean; error?: string }) => {
+        if (err) reject(err);
+        else resolve(ack);
+      },
+    );
+  });
+}
+
+// Marque une discussion comme non lue.
+export function markUnread(accountId: string, chatJid: string): void {
+  socket?.emit('wa:mark-unread', { accountId, chatJid });
+}
+
+// Supprime une discussion de ses appareils. Refuse si le socket est coupé.
+export function deleteChat(
+  accountId: string,
+  chatJid: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    const s = socket;
+    if (!s || !s.connected) {
+      reject(new Error('Socket non connecté'));
+      return;
+    }
+    s.timeout(20_000).emit(
+      'wa:delete-chat',
+      { accountId, chatJid },
+      (err: Error | null, ack: { ok: boolean; error?: string }) => {
+        if (err) reject(err);
+        else resolve(ack);
+      },
+    );
+  });
+}
+
+// Épingle / désépingle une discussion (3 au plus, le backend refuse au-delà).
+export function pinChat(
+  accountId: string,
+  chatJid: string,
+  pinned: boolean,
+): void {
+  socket?.emit('wa:pin', { accountId, chatJid, pinned });
 }
 
 // Coupe / réactive les notifications d'une discussion (mute).

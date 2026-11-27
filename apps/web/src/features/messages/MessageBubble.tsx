@@ -1,9 +1,23 @@
-import { useState } from 'react';
+import { lazy, Suspense, useRef, useState } from 'react';
 import { WaMessageStatus, WaMessageType } from '@app/shared-types';
 import type { WaMessage, WaReaction } from '@app/shared-types';
 import { formatTime } from '../../lib/format';
+import { formatWhatsappText } from '../../lib/formatText';
 import MediaContent from './MediaContent';
 import MessageInfoModal from './MessageInfoModal';
+import DeleteMessageModal from './DeleteMessageModal';
+import ForwardModal from './ForwardModal';
+import { reactToMessage, starMessage } from '../../services/socket';
+import { useAppDispatch } from '../../app/hooks';
+import { setComposerAction } from '../ui/uiSlice';
+
+// Chargé à la demande : la bibliothèque d'emojis pèse plusieurs centaines de Ko.
+const EmojiPanel = lazy(() => import('../../components/EmojiPanel'));
+
+// Délai de modification d'un message (règle WhatsApp, revérifiée côté serveur).
+const EDIT_WINDOW_MS = 15 * 60 * 1000;
+// Délai « supprimer pour tout le monde » (revérifié côté serveur).
+const REVOKE_WINDOW_MS = 48 * 60 * 60 * 1000;
 
 interface Props {
   message: WaMessage;
@@ -145,6 +159,7 @@ export default function MessageBubble({
   accountLabel,
   accountColor,
 }: Props) {
+  const dispatch = useAppDispatch();
   const isOwn = message.fromMe;
   // Panneau « Infos du message » (accusés de réception), messages sortants.
   const [infoOpen, setInfoOpen] = useState(false);
@@ -171,8 +186,163 @@ export default function MessageBubble({
     : '';
   const quoteText = quoted ? quotedPreview(quoted) : 'Message';
 
+  // Réactions : seulement sur un message réellement envoyé/reçu (pas l'écho
+  // optimistic en attente, ni un message en échec ou système).
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const reactBtnRef = useRef<HTMLButtonElement | null>(null);
+  const [reactError, setReactError] = useState<string | null>(null);
+  const canReact =
+    message.status !== WaMessageStatus.PENDING &&
+    message.status !== WaMessageStatus.ERROR &&
+    message.type !== WaMessageType.SYSTEM;
+  // Actions possibles sur un message réellement envoyé/reçu.
+  const canAct =
+    message.status !== WaMessageStatus.PENDING &&
+    message.status !== WaMessageStatus.ERROR;
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [forwardOpen, setForwardOpen] = useState(false);
+  // Transférable : texte ou média réel (pas position, contact, système).
+  const canForward =
+    canReact &&
+    (message.type === WaMessageType.TEXT || message.media != null);
+  // « Pour tout le monde » : ses propres messages, non déjà supprimés, < 48 h
+  // (le serveur revérifie).
+  const canRevoke =
+    canReact && isOwn && Date.now() - message.timestamp < REVOKE_WINDOW_MS;
+  const myReaction = message.reactions.find((r) => r.fromMe)?.emoji ?? null;
+  // Modifiable : son propre message texte envoyé il y a moins de 15 min
+  // (le serveur revérifie tout).
+  const canEdit =
+    canReact &&
+    isOwn &&
+    message.type === WaMessageType.TEXT &&
+    Date.now() - message.timestamp < EDIT_WINDOW_MS;
+  const onReact = (emoji: string) => {
+    setPickerOpen(false);
+    // Re-choisir sa réaction actuelle la retire (comme WhatsApp).
+    const next = emoji === myReaction ? '' : emoji;
+    reactToMessage(message.accountId, message.chatJid, message.id, next)
+      .then((ack) => {
+        if (!ack.ok) setReactError(ack.error ?? 'Échec');
+      })
+      .catch(() => setReactError('WhatsApp injoignable'));
+  };
+
   return (
-    <div className={'bubblerow' + (isOwn ? ' bubblerow--own' : '')}>
+    <div
+      className={'bubblerow' + (isOwn ? ' bubblerow--own' : '')}
+      data-msg-id={message.id}
+    >
+      {canAct && (
+        <div className="bubblerow__react">
+          {canReact && (
+          <>
+          <button
+            ref={reactBtnRef}
+            type="button"
+            className="react-trigger"
+            title="Réagir"
+            aria-label="Réagir à ce message"
+            aria-expanded={pickerOpen}
+            onClick={() => {
+              setReactError(null);
+              setPickerOpen((v) => !v);
+            }}
+          >
+            ☺
+          </button>
+          <button
+            type="button"
+            className="react-trigger"
+            title="Répondre"
+            aria-label="Répondre à ce message"
+            onClick={() =>
+              dispatch(
+                setComposerAction({
+                  kind: 'reply',
+                  chatJid: message.chatJid,
+                  message,
+                }),
+              )
+            }
+          >
+            ↩
+          </button>
+          </>
+          )}
+          {canEdit && (
+            <button
+              type="button"
+              className="react-trigger"
+              title="Modifier"
+              aria-label="Modifier ce message"
+              onClick={() =>
+                dispatch(
+                  setComposerAction({
+                    kind: 'edit',
+                    chatJid: message.chatJid,
+                    message,
+                  }),
+                )
+              }
+            >
+              ✎
+            </button>
+          )}
+          {canReact && (
+            <button
+              type="button"
+              className="react-trigger"
+              title={message.starred ? 'Retirer des importants' : 'Marquer comme important'}
+              aria-label={
+                message.starred ? 'Retirer des importants' : 'Marquer comme important'
+              }
+              aria-pressed={Boolean(message.starred)}
+              onClick={() =>
+                starMessage(
+                  message.accountId,
+                  message.chatJid,
+                  message.id,
+                  !message.starred,
+                )
+              }
+            >
+              {message.starred ? '★' : '☆'}
+            </button>
+          )}
+          {canForward && (
+            <button
+              type="button"
+              className="react-trigger"
+              title="Transférer"
+              aria-label="Transférer ce message"
+              onClick={() => setForwardOpen(true)}
+            >
+              ↪
+            </button>
+          )}
+          <button
+            type="button"
+            className="react-trigger"
+            title="Supprimer"
+            aria-label="Supprimer ce message"
+            onClick={() => setDeleteOpen(true)}
+          >
+            🗑
+          </button>
+          {pickerOpen && (
+            <Suspense fallback={null}>
+              <EmojiPanel
+                reactions
+                triggerRef={reactBtnRef}
+                className="emojipanel--react"
+                onPick={onReact}
+                onClose={() => setPickerOpen(false)}
+              />
+            </Suspense>
+          )}
+        </div>
+      )}
       <div
         className={
           'bubble' +
@@ -211,9 +381,17 @@ export default function MessageBubble({
         {/* La légende du média est rendue par MediaContent: on n'affiche le
             corps texte ici que pour les messages sans média. */}
         {!hasMedia && message.text && (
-          <span className="bubble__body">{message.text}</span>
+          <span className="bubble__body">
+            {formatWhatsappText(message.text)}
+          </span>
         )}
         <span className="bubble__meta">
+          {message.starred && (
+            <span className="bubble__star" title="Message important">
+              ★
+            </span>
+          )}
+          {message.edited && <span className="bubble__edited">modifié</span>}
           <span className="bubble__time">{formatTime(message.timestamp)}</span>
           {isOwn && (
             <span
@@ -234,6 +412,11 @@ export default function MessageBubble({
             via {accountLabel}
           </span>
         )}
+        {reactError && (
+          <span className="bubble__react-error" role="alert">
+            Réaction non envoyée : {reactError}
+          </span>
+        )}
         {reactions.length > 0 && (
           <div className="bubble__reactions">
             {reactions.map((r) => (
@@ -242,6 +425,7 @@ export default function MessageBubble({
                 className={
                   'reaction-chip' + (r.fromMe ? ' reaction-chip--own' : '')
                 }
+                title={r.fromMe ? 'Votre réaction' : undefined}
               >
                 <span className="reaction-chip__emoji">{r.emoji}</span>
                 {r.count > 1 && (
@@ -252,6 +436,16 @@ export default function MessageBubble({
           </div>
         )}
       </div>
+      {forwardOpen && (
+        <ForwardModal message={message} onClose={() => setForwardOpen(false)} />
+      )}
+      {deleteOpen && (
+        <DeleteMessageModal
+          message={message}
+          canRevoke={canRevoke}
+          onClose={() => setDeleteOpen(false)}
+        />
+      )}
       {infoOpen && (
         <MessageInfoModal message={message} onClose={() => setInfoOpen(false)} />
       )}

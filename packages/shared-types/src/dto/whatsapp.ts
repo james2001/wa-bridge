@@ -43,6 +43,34 @@ export interface WaContact {
   avatarUrl: string | null;
 }
 
+// Entrée du carnet pour « Nouvelle discussion » (contacts 1:1 joignables).
+// saved = enregistré dans le carnet du téléphone (sinon simple pseudo WhatsApp,
+// typiquement une personne croisée dans un groupe).
+export interface WaContactEntry {
+  jid: string; // JID pn …@s.whatsapp.net
+  name: string;
+  saved: boolean;
+}
+
+// GET /api/wa/contacts?accountId= -> carnet du compte (enregistrés d'abord).
+export interface WaContactsResponse {
+  contacts: WaContactEntry[];
+}
+
+// Infos d'un groupe (GET /api/wa/groups/:jid).
+export interface WaGroupParticipant {
+  jid: string; // JID tel que WhatsApp l'adresse (pn ou lid)
+  name: string | null;
+  admin: 'admin' | 'superadmin' | null;
+  isMe: boolean;
+}
+export interface WaGroupInfo {
+  jid: string;
+  subject: string | null;
+  description: string | null;
+  participants: WaGroupParticipant[];
+}
+
 // Une discussion dans la liste.
 export interface WaChat {
   accountId: string; // compte propriétaire
@@ -122,6 +150,8 @@ export interface WaMessage {
   media: WaMediaInfo | null;
   reactions: WaReaction[]; // réactions emoji posées sur ce message
   clientId: string | null; // corrélation avec l'écho optimistic
+  edited?: boolean; // texte modifié après envoi
+  starred?: boolean; // message important (étoile)
 }
 
 // --- REST ---

@@ -12,6 +12,7 @@ import AccountBar from '../whatsapp/AccountBar';
 import AddAccountModal from '../whatsapp/AddAccountModal';
 import RelinkAccountModal from '../whatsapp/RelinkAccountModal';
 import { useLogoutMutation } from '../auth/authApi';
+import ThemeToggle from '../ui/ThemeToggle';
 
 // Boîte de réception fusionnée : une entrée par personne, tous comptes confondus.
 export default function PeopleList() {
@@ -122,6 +123,7 @@ export default function PeopleList() {
           <span>Toutes les personnes</span>
         </div>
         <div className="sidebar__actions">
+          <ThemeToggle />
           <button
             className="iconbtn"
             title="Se déconnecter"

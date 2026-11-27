@@ -3,6 +3,7 @@ import type { WaMediaInfo, WaMessage } from '@app/shared-types';
 import { useAppSelector } from '../../app/hooks';
 import { selectAccessToken } from '../auth/authSlice';
 import { authedMediaUrl } from '../../lib/mediaUrl';
+import { formatWhatsappText } from '../../lib/formatText';
 
 interface Props {
   // L'appelant garantit message.media non nul.
@@ -228,7 +229,9 @@ export default function MediaContent({ message }: Props) {
   return (
     <div className="bubble__media">
       {content}
-      {showCaption && <span className="media-caption">{caption}</span>}
+      {showCaption && caption && (
+        <span className="media-caption">{formatWhatsappText(caption)}</span>
+      )}
       {lightboxOpen && src && (media.kind === 'image' || media.kind === 'video') && (
         <Lightbox
           kind={media.kind}
