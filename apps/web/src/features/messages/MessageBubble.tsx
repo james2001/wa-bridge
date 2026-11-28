@@ -3,6 +3,7 @@ import { WaMessageStatus, WaMessageType } from '@app/shared-types';
 import type { WaMessage, WaReaction } from '@app/shared-types';
 import { formatTime } from '../../lib/format';
 import { formatWhatsappText } from '../../lib/formatText';
+import Ticks from '../../components/Ticks';
 import MediaContent from './MediaContent';
 import MessageInfoModal from './MessageInfoModal';
 import DeleteMessageModal from './DeleteMessageModal';
@@ -10,6 +11,7 @@ import ForwardModal from './ForwardModal';
 import { reactToMessage, starMessage } from '../../services/socket';
 import { useAppDispatch } from '../../app/hooks';
 import { setComposerAction } from '../ui/uiSlice';
+import { senderColor } from '../../lib/senderColor';
 
 // Chargé à la demande : la bibliothèque d'emojis pèse plusieurs centaines de Ko.
 const EmojiPanel = lazy(() => import('../../components/EmojiPanel'));
@@ -28,6 +30,8 @@ interface Props {
   showAccount?: boolean;
   accountLabel?: string;
   accountColor?: string | null;
+  // Clic sur la citation : aller au message cité (fourni par le fil).
+  onJumpTo?: (id: string) => void;
 }
 
 // Réaction agrégée pour l'affichage: un emoji, son compteur, et un drapeau
@@ -55,24 +59,6 @@ function groupReactions(reactions: WaReaction[]): GroupedReaction[] {
   return order.map((e) => map.get(e) as GroupedReaction);
 }
 
-// Coche(s) WhatsApp selon le statut (uniquement pour les messages sortants).
-function statusMark(status: WaMessageStatus): string {
-  switch (status) {
-    case WaMessageStatus.PENDING:
-      return '🕓';
-    case WaMessageStatus.SENT:
-      return '✓';
-    case WaMessageStatus.DELIVERED:
-      return '✓✓';
-    case WaMessageStatus.READ:
-    case WaMessageStatus.PLAYED:
-      return '✓✓';
-    case WaMessageStatus.ERROR:
-      return '⚠';
-    default:
-      return '';
-  }
-}
 
 // Texte de remplacement pour les types non-texte (rendu média réel plus tard).
 function mediaPlaceholder(message: WaMessage): string | null {
@@ -158,14 +144,12 @@ export default function MessageBubble({
   showAccount = false,
   accountLabel,
   accountColor,
+  onJumpTo,
 }: Props) {
   const dispatch = useAppDispatch();
   const isOwn = message.fromMe;
   // Panneau « Infos du message » (accusés de réception), messages sortants.
   const [infoOpen, setInfoOpen] = useState(false);
-  const isRead =
-    message.status === WaMessageStatus.READ ||
-    message.status === WaMessageStatus.PLAYED;
   const isFailed = message.status === WaMessageStatus.ERROR;
   // Quand un média est présent, MediaContent prend le relais (rendu réel +
   // légende). Sinon on retombe sur le placeholder texte (location, contact…).
@@ -364,15 +348,51 @@ export default function MessageBubble({
             ⓘ
           </button>
         )}
-        {showSender && <span className="bubble__sender">{senderLabel}</span>}
-        {hasQuote && (
-          <div className="bubble__quote">
-            {quoteSender && (
-              <span className="bubble__quote-sender">{quoteSender}</span>
-            )}
-            <span className="bubble__quote-text">{quoteText}</span>
-          </div>
+        {showSender && (
+          <span
+            className="bubble__sender"
+            style={{ color: senderColor(message.senderJid ?? senderLabel) }}
+          >
+            {senderLabel}
+          </span>
         )}
+        {hasQuote &&
+          (() => {
+            // Couleur de l'auteur cité (comme son nom dans le groupe).
+            const qColor =
+              isGroup && quoted && !quoted.fromMe
+                ? senderColor(quoted.senderJid ?? quoteSender)
+                : undefined;
+            const inner = (
+              <>
+                {quoteSender && (
+                  <span
+                    className="bubble__quote-sender"
+                    style={qColor ? { color: qColor } : undefined}
+                  >
+                    {quoteSender}
+                  </span>
+                )}
+                <span className="bubble__quote-text">{quoteText}</span>
+              </>
+            );
+            const style = qColor ? { borderLeftColor: qColor } : undefined;
+            return onJumpTo && message.quotedId ? (
+              <button
+                type="button"
+                className="bubble__quote bubble__quote--link"
+                style={style}
+                title="Aller au message cité"
+                onClick={() => onJumpTo(message.quotedId as string)}
+              >
+                {inner}
+              </button>
+            ) : (
+              <div className="bubble__quote" style={style}>
+                {inner}
+              </div>
+            );
+          })()}
         {hasMedia && <MediaContent message={message} />}
         {placeholder && <span className="bubble__media">{placeholder}</span>}
         {unsupported && (
@@ -394,13 +414,11 @@ export default function MessageBubble({
           {message.edited && <span className="bubble__edited">modifié</span>}
           <span className="bubble__time">{formatTime(message.timestamp)}</span>
           {isOwn && (
-            <span
-              className={
-                'bubble__check' + (isRead ? ' bubble__check--read' : '')
-              }
-            >
-              {statusMark(message.status)}
-            </span>
+            <Ticks
+              className="bubble__check"
+              status={message.status}
+              partialRead={message.partialRead}
+            />
           )}
         </span>
         {showAccount && accountLabel && (

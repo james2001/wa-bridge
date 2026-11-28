@@ -1,4 +1,5 @@
 import { api } from '../../app/api';
+import { isReadStatus, statusRank } from '../../lib/statusMark';
 import type {
   WaChat,
   WaChatsResponse,
@@ -10,7 +11,9 @@ import type {
   WaContactEntry,
   WaGroupInfo,
   WaMessage,
+  WaMessageStatus,
   WaContactsResponse,
+  WaUnreadPreview,
 } from '@app/shared-types';
 
 // Argument scopé au compte pour les ressources liées à une discussion.
@@ -65,6 +68,19 @@ export const chatsApi = api.injectEndpoints({
       }),
       keepUnusedDataFor: 60,
     }),
+    // Derniers messages non lus (info-bulle de la liste). `count` et `lastTs`
+    // ne servent qu'à la clé de cache : un nouveau message change la clé et
+    // déclenche une relecture. Lecture seule côté serveur.
+    getUnreadPreview: builder.query<
+      WaUnreadPreview,
+      AccountJidArg & { count: number; lastTs: number | null }
+    >({
+      query: ({ accountId, jid }) => ({
+        url: `/wa/chats/${encodeURIComponent(jid)}/unread`,
+        params: { accountId },
+      }),
+      keepUnusedDataFor: 30,
+    }),
     // Messages importants (étoile) du compte.
     getStarred: builder.query<WaMessage[], string>({
       query: (accountId) => ({ url: '/wa/starred', params: { accountId } }),
@@ -103,6 +119,7 @@ export const {
   useGetChatMediaQuery,
   useGetContactAboutQuery,
   useGetCommunitiesQuery,
+  useGetUnreadPreviewQuery,
 } = chatsApi;
 
 // Remplace tout le cache de la liste d'un compte (sync initiale 'wa:chats').
@@ -114,8 +131,60 @@ export function setChats(accountId: string, chats: WaChat[]) {
 export function upsertChat(accountId: string, chat: WaChat) {
   return chatsApi.util.updateQueryData('getChats', accountId, (draft) => {
     const idx = draft.findIndex((c) => c.jid === chat.jid);
-    if (idx >= 0) draft[idx] = chat;
-    else draft.push(chat);
+    if (idx >= 0) {
+      const prev = draft[idx];
+      // Une mise à jour isolée ne porte pas le dernier message : on garde
+      // celui déjà connu (tenu à jour par patchChatLastMessage).
+      draft[idx] =
+        chat.lastMessageFromMe === undefined
+          ? {
+              ...chat,
+              lastMessageId: prev.lastMessageId,
+              lastMessageFromMe: prev.lastMessageFromMe,
+              lastMessageStatus: prev.lastMessageStatus,
+            }
+          : chat;
+    } else draft.push(chat);
     draft.sort((a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0));
+  });
+}
+
+// Nouveau message ('wa:message') : devient le dernier de sa discussion s'il
+// est au moins aussi récent (coches affichées dans la liste).
+export function patchChatLastMessage(accountId: string, message: WaMessage) {
+  return chatsApi.util.updateQueryData('getChats', accountId, (draft) => {
+    const c = draft.find((cc) => cc.jid === message.chatJid);
+    if (!c) return;
+    if (c.lastMessageId === message.id) {
+      if (statusRank(message.status) >= statusRank(c.lastMessageStatus)) {
+        c.lastMessageStatus = message.status;
+      }
+      return;
+    }
+    if (message.timestamp < (c.lastMessageTs ?? 0)) return;
+    c.lastMessageId = message.id;
+    c.lastMessageFromMe = message.fromMe;
+    c.lastMessageStatus = message.status;
+    c.lastMessagePartialRead = message.partialRead ?? false;
+  });
+}
+
+// Accusé ('wa:message-status') : met à jour les coches de la liste si le
+// message est le dernier de sa discussion. Jamais de recul.
+export function updateChatLastStatus(
+  accountId: string,
+  chatJid: string,
+  id: string,
+  status: WaMessageStatus,
+  partialRead?: boolean,
+) {
+  return chatsApi.util.updateQueryData('getChats', accountId, (draft) => {
+    const c = draft.find((cc) => cc.jid === chatJid);
+    if (!c || c.lastMessageId !== id) return;
+    if (statusRank(status) >= statusRank(c.lastMessageStatus)) {
+      c.lastMessageStatus = status;
+    }
+    if (isReadStatus(c.lastMessageStatus)) c.lastMessagePartialRead = false;
+    else if (partialRead !== undefined) c.lastMessagePartialRead = partialRead;
   });
 }

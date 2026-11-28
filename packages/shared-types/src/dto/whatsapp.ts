@@ -80,6 +80,12 @@ export interface WaChat {
   unreadCount: number;
   lastMessageTs: number | null; // epoch ms
   lastMessagePreview: string | null;
+  // Dernier message (coches dans la liste). Fournis par la liste complète ;
+  // absents d'une mise à jour isolée (le front garde alors les siens).
+  lastMessageId?: string | null;
+  lastMessageFromMe?: boolean;
+  lastMessageStatus?: WaMessageStatus | null;
+  lastMessagePartialRead?: boolean;
   pinned: boolean;
   archived: boolean;
   muted: boolean;
@@ -152,6 +158,9 @@ export interface WaMessage {
   clientId: string | null; // corrélation avec l'écho optimistic
   edited?: boolean; // texte modifié après envoi
   starred?: boolean; // message important (étoile)
+  // Groupe : lu par au moins un membre mais pas par tous -> une coche bleue,
+  // une grise (le double bleu attend que tous aient lu).
+  partialRead?: boolean;
 }
 
 // --- REST ---
@@ -169,6 +178,19 @@ export interface WaMessagesPage {
   messages: WaMessage[]; // ordre chronologique croissant
   hasMore: boolean;
   nextBefore: number | null; // timestamp à passer pour la page suivante
+}
+
+// GET /api/wa/chats/:jid/unread -> derniers messages non lus d'une discussion
+// (info-bulle de la liste). Lecture seule.
+export interface WaUnreadPreviewItem {
+  id: string;
+  timestamp: number; // epoch ms
+  senderName: string | null; // groupes seulement
+  text: string; // aperçu (texte, ou « 📷 Photo »…)
+}
+export interface WaUnreadPreview {
+  messages: WaUnreadPreviewItem[]; // ordre chronologique, les plus récents
+  total: number; // nombre de non-lus de la discussion (≥ messages.length)
 }
 
 // --- Vue fusionnée par personne (multi-compte) ---
@@ -245,6 +267,8 @@ export interface WaPresence {
   jid: string;
   kind: PresenceKind;
   at: number; // epoch ms
+  // Groupe : nom du participant qui écrit / enregistre (null sinon).
+  participantName?: string | null;
 }
 
 // --- API Agent / LLM (server-to-server, header X-API-Key) ---

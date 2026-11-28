@@ -49,6 +49,9 @@ export interface ClientToServerEvents {
 
   // S'abonne à la présence d'un contact (online / typing).
   'wa:subscribe-presence': (input: { accountId?: string; jid: string }) => void;
+  // Onglet réellement utilisé ou non : pilote le passage « en ligne » du
+  // compte, condition pour recevoir « écrit… » (présence seulement).
+  'wa:active': (input: { active: boolean }) => void;
 
   // Délie la session WhatsApp (logout) -> nécessitera un nouveau scan.
   'wa:logout': (

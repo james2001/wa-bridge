@@ -1,4 +1,16 @@
 :root {
+  --sender-0: #c2185b;
+  --sender-1: #7b1fa2;
+  --sender-2: #3949ab;
+  --sender-3: #0277bd;
+  --sender-4: #00796b;
+  --sender-5: #2e7d32;
+  --sender-6: #9a6700;
+  --sender-7: #d84315;
+  --sender-8: #6d4c41;
+  --sender-9: #ad1457;
+  --sender-10: #00838f;
+  --sender-11: #5e35b1;
   --green: #00a884;
   --green-dark: #008069;
   --green-light: #d9fdd3;
@@ -26,6 +38,18 @@
 
 /* Thème sombre : posé par <html data-theme="dark"> (src/lib/theme.ts). */
 :root[data-theme='dark'] {
+  --sender-0: #ff7aa8;
+  --sender-1: #d69cf5;
+  --sender-2: #9fa8ff;
+  --sender-3: #64b5f6;
+  --sender-4: #4dd0c1;
+  --sender-5: #81c784;
+  --sender-6: #ffca5f;
+  --sender-7: #ff8a65;
+  --sender-8: #d2b4a6;
+  --sender-9: #f48fb1;
+  --sender-10: #4dd0e1;
+  --sender-11: #b39ddb;
   --green: #00a884;
   --green-dark: #00a884;
   --green-light: #103529;
@@ -514,6 +538,13 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.convitem__check {
+  margin-right: 3px;
+  font-size: 12px;
+}
+.convitem__check--read {
+  color: #53bdeb;
+}
 .badge {
   background: var(--green);
   color: #fff;
@@ -932,6 +963,13 @@ button {
   padding: 10px 16px;
   background: var(--header);
   border-top: 1px solid var(--border);
+}
+.composer--readonly {
+  margin: 0;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 14px;
+  text-align: center;
 }
 .composer__input {
   flex: 1;
@@ -2290,4 +2328,235 @@ a.gallery__file:hover {
 .mentions__num {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+/* Info-bulle « derniers messages non lus » au survol d'une discussion. */
+.unreadtip {
+  position: fixed;
+  z-index: 900;
+  max-height: min(60vh, 480px);
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  font-size: 13px;
+}
+.unreadtip__head {
+  flex: none;
+  margin-bottom: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+/* Les plus récents restent visibles : le débordement coupe le haut. */
+.unreadtip__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.unreadtip__item {
+  flex: none;
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+}
+.unreadtip__item:first-child {
+  border-top: none;
+}
+.unreadtip__meta {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.unreadtip__sender {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.unreadtip__time {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.unreadtip__text {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.unreadtip__empty {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+/* « écrit… » : trois points animés (liste, en-tête, bas du fil). */
+.typing {
+  color: var(--green-dark);
+  font-weight: 500;
+}
+.typingdots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+.typingdots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.35;
+  animation: typingdot 1.2s infinite ease-in-out;
+}
+.typingdots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.typingdots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes typingdot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typingdots i {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+/* Bulle « ••• » : dernière ligne du fil, côté messages reçus. */
+.typingbubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--bubble-in);
+  color: var(--text-muted);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.13);
+}
+.typingbubble .typingdots {
+  margin-right: 0;
+}
+.typingbubble .typingdots i {
+  width: 7px;
+  height: 7px;
+}
+.typingbubble__name {
+  font-size: 12px;
+}
+
+/* Citation cliquable : mène au message cité. */
+.bubble__quote--link {
+  width: 100%;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.bubble__quote--link:hover {
+  filter: brightness(0.96);
+}
+.bubble__quote--link:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+}
+
+/* ---------- Affichage compact de la colonne de gauche ----------
+   Petits écrans : recherche dans l'en-tête, barres et discussions serrées.
+   « Ajouter un compte / Re-lier » (compte unique) restent dans l'affichage
+   normal. */
+.sidebar__header--compact {
+  gap: 4px;
+  padding: 4px 6px 4px 8px;
+}
+.sidebar__header--compact .iconbtn {
+  width: 30px;
+  height: 30px;
+  font-size: 16px;
+}
+.sidebar__search--inline {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border-bottom: 0;
+  background: transparent;
+}
+.sidebar__search--inline input {
+  padding: 5px 12px;
+  font-size: 13px;
+}
+[data-density='compact'] .acctbar--single {
+  display: none;
+}
+[data-density='compact'] .acctbar {
+  padding: 3px 8px;
+}
+[data-density='compact'] .notifbar {
+  padding: 5px 12px;
+  font-size: 12px;
+}
+[data-density='compact'] .filterbar {
+  gap: 6px;
+  padding: 4px 8px;
+}
+[data-density='compact'] .filterchip {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+[data-density='compact'] .filterchip__count {
+  min-width: 16px;
+  height: 16px;
+  font-size: 10px;
+}
+[data-density='compact'] .convitem {
+  gap: 10px;
+  padding: 5px 12px;
+}
+[data-density='compact'] .convitem .avatar {
+  width: 34px;
+  height: 34px;
+  font-size: 13px;
+}
+[data-density='compact'] .convitem__title {
+  font-size: 14px;
+}
+[data-density='compact'] .convitem__preview {
+  font-size: 12.5px;
+}
+[data-density='compact'] .convitem .badge {
+  min-width: 18px;
+  height: 18px;
+  font-size: 10px;
+}
+[data-density='compact'] .community__header,
+[data-density='compact'] .archived-toggle {
+  padding-top: 5px;
+  padding-bottom: 5px;
 }

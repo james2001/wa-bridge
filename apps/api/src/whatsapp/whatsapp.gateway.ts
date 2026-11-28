@@ -5,6 +5,7 @@ import {
   ConnectedSocket,
   MessageBody,
   OnGatewayConnection,
+  OnGatewayDisconnect,
   OnGatewayInit,
   SubscribeMessage,
   WebSocketGateway,
@@ -47,7 +48,9 @@ type AppSocket = Socket<
   },
   transports: ['websocket'],
 })
-export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
+export class WhatsappGateway
+  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
+{
   private readonly logger = new Logger(WhatsappGateway.name);
   private forwardingWired = false;
 
@@ -103,7 +106,12 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
         'message-status',
         (
           accountId: string,
-          p: { id: string; chatJid: string; status: WaMessageStatus },
+          p: {
+            id: string;
+            chatJid: string;
+            status: WaMessageStatus;
+            partialRead?: boolean;
+          },
         ) => this.server.emit('wa:message-status', { accountId, ...p }),
       );
       this.wa.on('chats', (accountId: string, chats: WaChat[]) =>
@@ -168,6 +176,21 @@ export class WhatsappGateway implements OnGatewayInit, OnGatewayConnection {
     } catch (e) {
       this.logger.error(`listChats au connect: ${e}`);
     }
+  }
+
+  // Onglet fermé ou socket coupé : il ne compte plus comme « utilisé ».
+  handleDisconnect(socket: AppSocket): void {
+    this.wa.setClientActive(socket.id, false);
+  }
+
+  // L'onglet est-il réellement utilisé (visible, au premier plan, actif) ?
+  // Pilote le passage en ligne du compte (cf. setClientActive).
+  @SubscribeMessage('wa:active')
+  onActive(
+    @MessageBody() input: { active?: boolean },
+    @ConnectedSocket() socket: AppSocket,
+  ): void {
+    this.wa.setClientActive(socket.id, input?.active === true);
   }
 
   @SubscribeMessage('wa:send-text')

@@ -57,10 +57,11 @@ import {
   type WaPerson,
   type WaPresence,
   type WaReaction,
+  type WaUnreadPreview,
 } from '@app/shared-types';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { mapWaMessage, previewOf } from './whatsapp.mapper';
+import { mapWaMessage, previewOf, unwrapContent } from './whatsapp.mapper';
 
 // Seuil départageant une durée relative (petite valeur) d'un timestamp epoch ms
 // (~1.7e12). Sous ce seuil, muteEndTime est une durée => discussion muette.
@@ -68,6 +69,27 @@ const EPOCH_FLOOR_MS = 1_000_000_000_000; // 2001-09-09 en ms
 
 // Compte historique unique (mono-compte). Tout passe par lui en Phase 1.
 const DEFAULT_ACCOUNT_ID = 'default';
+
+// Meta AI (et autres bots WhatsApp : 1313555xxxx, 131655500xx, @bot). Baileys
+// ne sait pas lui écrire (le serveur n'accuse jamais réception) et ignore ses
+// réponses (chiffrement « msmsg », rejeté par messages-recv.js). On refuse
+// donc l'envoi plutôt que de laisser croire qu'il est parti.
+const META_AI_RE = /^(1313555\d{4}|131655500\d{2})@s\.whatsapp\.net$/;
+const isMetaAiJid = (jid: string): boolean =>
+  META_AI_RE.test(jid) || jid.endsWith('@bot');
+// Ordre des statuts d'un message sortant (pending < sent < delivered < read
+// < played). « error » est hors échelle (-1) : jamais écrasé ni propagé.
+const OUTGOING_ORDER: WaMessageStatus[] = [
+  WaMessageStatus.PENDING,
+  WaMessageStatus.SENT,
+  WaMessageStatus.DELIVERED,
+  WaMessageStatus.READ,
+  WaMessageStatus.PLAYED,
+];
+const statusRank = (s: WaMessageStatus): number => OUTGOING_ORDER.indexOf(s);
+
+const META_AI_UNSUPPORTED =
+  "Meta AI n'est pas pris en charge par wa-bridge : écrivez-lui depuis le téléphone.";
 
 // Renvoie une chaîne non vide nettoyée, ou null. WhatsApp livre souvent ''
 // (chaîne vide) pour un nom absent : avec `??` la chaîne vide passerait à
@@ -93,6 +115,7 @@ export interface WhatsappEvents {
       id: string;
       chatJid: string;
       status: WaMessageStatus;
+      partialRead?: boolean;
     },
   ) => void;
   chats: (accountId: string, chats: WaChat[]) => void;
@@ -144,6 +167,16 @@ interface AccountSession {
   // Relecture complète de l'app-state en cours (cf. resyncChatStateOnce) :
   // seuls les épinglages en sont retenus.
   chatStateReplay: boolean;
+  // Clients web (id de socket) actuellement utilisés : onglet visible, au
+  // premier plan, avec une activité récente. Tant qu'il y en a un, le compte
+  // est « en ligne » côté WhatsApp, condition pour recevoir « écrit… ».
+  activeClients: Set<string>;
+  // Derniers contacts suivis (présence), réabonnés au passage en ligne.
+  presenceSubs: string[];
+  // Nombre de destinataires d'un groupe (membres hors toi), pour savoir si
+  // TOUS ont lu. Lu via groupMetadata (requête de lecture), gardé 30 min.
+  groupSizes: Map<string, { n: number; at: number }>;
+  groupSizeInflight: Map<string, Promise<number | null>>;
 }
 
 // Champs app-state posés localement puis renvoyés en écho par WhatsApp.
@@ -309,6 +342,10 @@ export class WhatsappService
         lastEventAt: Date.now(),
         lidToPn: new Map(),
         nameByJid: new Map(),
+        activeClients: new Set(),
+        presenceSubs: [],
+        groupSizes: new Map(),
+        groupSizeInflight: new Map(),
         blockedJids: new Set(),
         historySyncing: false,
         groupBackfillRunning: false,
@@ -714,6 +751,11 @@ export class WhatsappService
       // Une fois par compte : relit l'état « épinglé / archivé / lu » depuis
       // WhatsApp (laisse d'abord finir la synchro de connexion).
       setTimeout(() => void this.resyncChatStateOnce(accountId), 20_000);
+      // Coches de groupe posées « lues » au premier lecteur (avant ce
+      // correctif) : recalées une fois la synchro de connexion passée.
+      setTimeout(() => void this.repairGroupReadStatuses(accountId), 45_000);
+      // Reconnexion pendant qu'un onglet est utilisé : repasser en ligne.
+      if (s.activeClients.size > 0) void this.sendOnline(s, true);
     }
 
     if (connection === 'close') {
@@ -844,6 +886,16 @@ export class WhatsappService
       if (await this.handleProtocolMessage(accountId, raw)) continue;
       const msg = mapWaMessage(raw, s.sock?.user?.id, accountId);
       if (!msg) continue;
+      if (msg.type === WaMessageType.UNSUPPORTED) {
+        // Nom du type seulement (jamais le contenu) : pour savoir quoi prendre
+        // en charge ou masquer ensuite.
+        const c = raw.message ? unwrapContent(raw.message) : undefined;
+        this.logger.warn(
+          `message non pris en charge ${msg.id} (${msg.chatJid}) : ${
+            c ? Object.keys(c).join(',') : 'vide'
+          }`,
+        );
+      }
       // Ignore les Status/Stories et newsletters (pas des conversations).
       if (this.isIgnoredChat(msg.chatJid)) continue;
       // Canonicalise vers le numéro pour qu'un contact = UNE conversation.
@@ -866,7 +918,9 @@ export class WhatsappService
       // LID) trouve l'id existant -> pas de double comptage. La synchro
       // d'historique ('append'/history.set) n'incrémente pas.
       let isNewIncoming = false;
-      if (!msg.fromMe && u?.type === 'notify') {
+      // Les notifications système (ajout au groupe, changement de nom…) ne
+      // comptent pas comme non-lues, comme dans l'app officielle.
+      if (!msg.fromMe && u?.type === 'notify' && msg.type !== WaMessageType.SYSTEM) {
         const existed = await this.prisma.waMessage
           .findUnique({
             where: {
@@ -890,6 +944,13 @@ export class WhatsappService
       const chat = await this.touchChat(accountId, msg, isNewIncoming);
       this.emit('message', accountId, msg, chat);
       if (chat) this.emit('chat-upsert', accountId, chat);
+      // Tu as écrit dans cette discussion (ici ou depuis le téléphone) : ce
+      // qui précède est lu, comme dans l'app officielle. Pour un entrant, la
+      // même règle écarte un message livré en retard, plus ancien que ta
+      // réponse (reconnexion) : il ne doit pas rallumer la pastille.
+      if (msg.fromMe || isNewIncoming) {
+        await this.reconcileUnread(accountId, [msg.chatJid]);
+      }
     }
   }
 
@@ -1061,6 +1122,9 @@ export class WhatsappService
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     updates: any[],
   ): Promise<void> {
+    // Discussions où un message a été lu (accusé read-self d'un autre de tes
+    // appareils) -> compteur de non-lus à recaler en fin de lot.
+    const readChats = new Set<string>();
     for (const { key, update } of updates) {
       const rawJid: string | undefined = key?.remoteJid ?? undefined;
       const id: string | undefined = key?.id ?? undefined;
@@ -1081,13 +1145,13 @@ export class WhatsappService
       // arriver sous le JID @lid -> on canonicalise pour retrouver le message.
       const chatJid = (await this.resolvePn(accountId, rawJid)) ?? rawJid;
       const status = this.mapNumericStatus(update.status);
-      await this.prisma.waMessage
-        .update({
-          where: { accountId_chatJid_id: { accountId, chatJid, id } },
-          data: { status },
-        })
-        .catch(() => undefined); // message pas encore en cache
-      this.emit('message-status', accountId, { id, chatJid, status });
+      await this.applyStatus(accountId, chatJid, id, status);
+      if (
+        !key?.fromMe &&
+        (status === WaMessageStatus.READ || status === WaMessageStatus.PLAYED)
+      ) {
+        readChats.add(chatJid);
+      }
 
       // En 1:1, distribution/lecture arrivent ICI (statut agrégé) et NON via
       // message-receipt.update — donc sans horodatage par destinataire. On
@@ -1107,6 +1171,141 @@ export class WhatsappService
                 : null;
         if (stamp) await this.mergeReceipt(accountId, chatJid, id, chatJid, stamp);
       }
+    }
+    await this.reconcileUnread(accountId, [...readChats]);
+  }
+
+  // Applique un statut (coches) à un message, sans jamais le faire reculer :
+  // les accusés arrivent parfois dans le désordre (« distribué » après « lu »).
+  // En 1:1, un message à toi distribué ou lu implique que tes messages
+  // PRÉCÉDENTS le sont aussi (WhatsApp n'accuse pas toujours chacun, et un
+  // accusé reçu avant l'enregistrement du message est perdu) : on les remonte.
+  // Les « en attente » ne sont pas remontés (ils ont pu échouer).
+  private async applyStatus(
+    accountId: string,
+    chatJid: string,
+    id: string,
+    status: WaMessageStatus,
+  ): Promise<void> {
+    let rank = statusRank(status);
+    if (rank < 0) return;
+    const row = await this.prisma.waMessage
+      .findUnique({
+        where: { accountId_chatJid_id: { accountId, chatJid, id } },
+        select: { status: true, fromMe: true, sentAt: true, receipts: true },
+      })
+      .catch(() => null);
+    if (!row) return; // message pas encore en base
+    // Groupe : « lu » (bleu) seulement quand TOUS les membres ont lu. Avant,
+    // le message reste « distribué » ; partialRead (calculé des accusés)
+    // donne la coche bleue + grise dès qu'au moins un a lu.
+    if (
+      row.fromMe &&
+      isJidGroup(chatJid) &&
+      rank >= statusRank(WaMessageStatus.READ) &&
+      (await this.groupFullyRead(accountId, chatJid, row.receipts)) === false
+    ) {
+      status = WaMessageStatus.DELIVERED;
+      rank = statusRank(status);
+    }
+    if (rank > statusRank(row.status as WaMessageStatus)) {
+      await this.prisma.waMessage
+        .update({
+          where: { accountId_chatJid_id: { accountId, chatJid, id } },
+          data: { status },
+        })
+        .catch(() => undefined);
+      this.emit('message-status', accountId, { id, chatJid, status });
+    }
+    if (!row.fromMe || isJidGroup(chatJid) || rank < statusRank(WaMessageStatus.DELIVERED)) {
+      return;
+    }
+    // Remontée des précédents (« écouté » ne concerne que les vocaux -> « lu »).
+    const upTo =
+      status === WaMessageStatus.PLAYED ? WaMessageStatus.READ : status;
+    const lower = OUTGOING_ORDER.slice(1, OUTGOING_ORDER.indexOf(upTo));
+    const older = await this.prisma.waMessage
+      .findMany({
+        where: {
+          accountId,
+          chatJid,
+          fromMe: true,
+          sentAt: { lt: row.sentAt },
+          status: { in: lower },
+        },
+        select: { id: true },
+        take: 500,
+      })
+      .catch(() => [] as { id: string }[]);
+    if (older.length === 0) return;
+    await this.prisma.waMessage
+      .updateMany({
+        where: { accountId, chatJid, id: { in: older.map((o) => o.id) } },
+        data: { status: upTo },
+      })
+      .catch(() => undefined);
+    for (const o of older) {
+      this.emit('message-status', accountId, { id: o.id, chatJid, status: upTo });
+    }
+  }
+
+  // Même règle, en une passe sur toute la base (au démarrage) : rattrape les
+  // coches restées en retard avant ce correctif. Base locale seulement.
+  private async repairOutgoingStatuses(accountId: string): Promise<void> {
+    try {
+      // 1) En 1:1, l'accusé par destinataire (colonne receipts, jamais
+      //    écrasée) fait foi : il a gardé le « lu » que l'écho d'envoi avait
+      //    effacé du statut.
+      const fromReceipts = await this.prisma.$executeRaw`
+        WITH x AS (
+          SELECT m.account_id, m.chat_jid, m.id,
+            CASE
+              WHEN bool_or(r->>'playedAt' IS NOT NULL) THEN 4
+              WHEN bool_or(r->>'readAt' IS NOT NULL) THEN 3
+              WHEN bool_or(r->>'deliveredAt' IS NOT NULL) THEN 2
+              ELSE -1 END AS rk
+          FROM wa_messages m
+          CROSS JOIN LATERAL jsonb_array_elements(m.receipts) r
+          WHERE m.account_id = ${accountId} AND m.from_me
+            AND m.chat_jid NOT LIKE '%@g.us'
+            AND jsonb_typeof(m.receipts) = 'array'
+            AND m.status IN ('pending', 'sent', 'delivered', 'read')
+          GROUP BY m.account_id, m.chat_jid, m.id
+        )
+        UPDATE wa_messages m
+        SET status = CASE x.rk WHEN 4 THEN 'played' WHEN 3 THEN 'read'
+          ELSE 'delivered' END
+        FROM x
+        WHERE m.account_id = x.account_id AND m.chat_jid = x.chat_jid
+          AND m.id = x.id AND x.rk >= 2
+          AND x.rk > CASE m.status WHEN 'pending' THEN 0 WHEN 'sent' THEN 1
+            WHEN 'delivered' THEN 2 WHEN 'read' THEN 3 ELSE 4 END`;
+      if (fromReceipts > 0) {
+        this.logger.log(`coches reprises des accusés (${fromReceipts} messages) [${accountId}]`);
+      }
+      // 2) Remontée des messages précédents.
+      const n = await this.prisma.$executeRaw`
+        WITH r AS (
+          SELECT account_id, chat_jid, id, sent_at,
+            CASE status WHEN 'sent' THEN 1 WHEN 'delivered' THEN 2
+              WHEN 'read' THEN 3 WHEN 'played' THEN 3 ELSE -1 END AS rk
+          FROM wa_messages
+          WHERE account_id = ${accountId} AND from_me
+            AND chat_jid NOT LIKE '%@g.us'
+        ), w AS (
+          SELECT account_id, chat_jid, id, rk,
+            max(rk) OVER (PARTITION BY chat_jid ORDER BY sent_at DESC
+              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS best
+          FROM r
+        )
+        UPDATE wa_messages m
+        SET status = CASE w.best WHEN 2 THEN 'delivered' ELSE 'read' END
+        FROM w
+        WHERE m.account_id = w.account_id AND m.chat_jid = w.chat_jid
+          AND m.id = w.id AND w.rk IN (1, 2) AND w.best > w.rk`;
+      if (n > 0) this.logger.log(`coches recalées (${n} messages) [${accountId}]`);
+    } catch (e) {
+      this.logger.warn(`repairOutgoingStatuses: ${e}`);
     }
   }
 
@@ -1140,6 +1339,8 @@ export class WhatsappService
           : Number((t as { toNumber?: () => number }).toNumber?.() ?? t);
       return Number.isFinite(n) && n > 0 ? n * 1000 : null;
     };
+    // En groupe, ta propre lecture (autre appareil) arrive aussi ici.
+    const readChats = new Set<string>();
     for (const { key, receipt } of updates) {
       const rawJid: string | undefined = key?.remoteJid ?? undefined;
       const id: string | undefined = key?.id ?? undefined;
@@ -1152,16 +1353,9 @@ export class WhatsappService
       // L'accusé peut arriver sous le JID @lid alors que le message est stocké
       // sous le JID canonique (téléphone) -> on canonicalise.
       const chatJid = (await this.resolvePn(accountId, rawJid)) ?? rawJid;
-      await this.prisma.waMessage
-        .update({
-          where: { accountId_chatJid_id: { accountId, chatJid, id } },
-          data: { status },
-        })
-        .catch(() => undefined);
-      this.emit('message-status', accountId, { id, chatJid, status });
-
       // Capture l'accusé PAR destinataire (panneau « Infos du message »).
-      // userJid identifie le destinataire (présent surtout en groupe).
+      // userJid identifie le destinataire (présent surtout en groupe). Fait
+      // AVANT applyStatus : en groupe, le « lu » dépend de tous les accusés.
       const userJid =
         (await this.resolvePn(accountId, receipt.userJid)) ?? receipt.userJid;
       if (userJid) {
@@ -1171,7 +1365,146 @@ export class WhatsappService
           playedAt: toMs(receipt.playedTimestamp),
         });
       }
+      await this.applyStatus(accountId, chatJid, id, status);
+      if (status === WaMessageStatus.READ || status === WaMessageStatus.PLAYED) {
+        readChats.add(chatJid);
+        // Groupe : la coche bleue + grise apparaît dès le premier lecteur.
+        if (isJidGroup(chatJid)) await this.emitGroupTicks(accountId, chatJid, id);
+      }
     }
+    await this.reconcileUnread(accountId, [...readChats]);
+  }
+
+  // Messages de groupe marqués « lus » (coches bleues) alors que tous les
+  // membres n'ont pas lu : ramenés à « distribué » (bleu + gris à l'écran).
+  // 14 derniers jours, seulement ceux dont on a les accusés. Base locale.
+  private groupReadRepaired = new Set<string>();
+  private async repairGroupReadStatuses(accountId: string): Promise<void> {
+    if (this.groupReadRepaired.has(accountId)) return;
+    this.groupReadRepaired.add(accountId);
+    try {
+      const rows = await this.prisma.waMessage.findMany({
+        where: {
+          accountId,
+          fromMe: true,
+          chatJid: { endsWith: '@g.us' },
+          status: { in: [WaMessageStatus.READ, WaMessageStatus.PLAYED] },
+          sentAt: { gte: new Date(Date.now() - 14 * 86_400_000) },
+        },
+        select: { chatJid: true, id: true, receipts: true },
+        take: 3000,
+      });
+      const fix: { chatJid: string; id: string }[] = [];
+      for (const r of rows) {
+        if (!Array.isArray(r.receipts) || r.receipts.length === 0) continue;
+        if ((await this.groupFullyRead(accountId, r.chatJid, r.receipts)) === false) {
+          fix.push({ chatJid: r.chatJid, id: r.id });
+        }
+      }
+      for (const f of fix) {
+        await this.prisma.waMessage
+          .update({
+            where: { accountId_chatJid_id: { accountId, chatJid: f.chatJid, id: f.id } },
+            data: { status: WaMessageStatus.DELIVERED },
+          })
+          .catch(() => undefined);
+      }
+      if (fix.length > 0) {
+        this.logger.log(`coches de groupe recalées (${fix.length} messages) [${accountId}]`);
+      }
+    } catch (e) {
+      this.groupReadRepaired.delete(accountId);
+      this.logger.warn(`repairGroupReadStatuses: ${e}`);
+    }
+  }
+
+  // Membres d'un groupe hors toi (destinataires d'un message), ou null si
+  // inconnu (WhatsApp injoignable). Requête de lecture, mise en cache.
+  private async groupRecipientCount(
+    accountId: string,
+    jid: string,
+  ): Promise<number | null> {
+    const s = this.ensureSession(accountId);
+    const hit = s.groupSizes.get(jid);
+    if (hit && Date.now() - hit.at < 30 * 60_000) return hit.n;
+    const pending = s.groupSizeInflight.get(jid);
+    if (pending) return pending;
+    if (!s.sock || s.connection.state !== ConnectionState.OPEN) return hit?.n ?? null;
+    const sock = s.sock;
+    const p = (async () => {
+      try {
+        const meta = await this.withTimeout(
+          sock.groupMetadata(jid),
+          WhatsappService.REACTION_TIMEOUT_MS,
+        );
+        const n = Math.max(0, (meta.participants?.length ?? 0) - 1);
+        s.groupSizes.set(jid, { n, at: Date.now() });
+        return n;
+      } catch (e) {
+        this.logger.warn(`taille du groupe ${jid}: ${e}`);
+        return hit?.n ?? null;
+      } finally {
+        s.groupSizeInflight.delete(jid);
+      }
+    })();
+    s.groupSizeInflight.set(jid, p);
+    return p;
+  }
+
+  // Lecteurs (lu ou écouté) d'après les accusés stockés.
+  private readersOf(receipts: unknown): number {
+    const list = Array.isArray(receipts) ? (receipts as WaMessageReceipt[]) : [];
+    return list.filter((r) => r.readAt != null || r.playedAt != null).length;
+  }
+
+  // Tous les membres ont-ils lu ? null = taille du groupe inconnue (on garde
+  // alors le statut annoncé par WhatsApp).
+  private async groupFullyRead(
+    accountId: string,
+    jid: string,
+    receipts: unknown,
+  ): Promise<boolean | null> {
+    const n = await this.groupRecipientCount(accountId, jid);
+    if (n == null || n === 0) return null;
+    return this.readersOf(receipts) >= n;
+  }
+
+  // Pousse au web les coches d'un message de groupe (statut + lu partiel).
+  private async emitGroupTicks(
+    accountId: string,
+    chatJid: string,
+    id: string,
+  ): Promise<void> {
+    const row = await this.prisma.waMessage
+      .findUnique({
+        where: { accountId_chatJid_id: { accountId, chatJid, id } },
+        select: { status: true, fromMe: true, receipts: true },
+      })
+      .catch(() => null);
+    if (!row?.fromMe) return;
+    const status = row.status as WaMessageStatus;
+    this.emit('message-status', accountId, {
+      id,
+      chatJid,
+      status,
+      partialRead: this.isPartialRead(chatJid, true, status, row.receipts),
+    });
+  }
+
+  // Groupe : lu par au moins un membre mais pas (encore) par tous.
+  private isPartialRead(
+    chatJid: string,
+    fromMe: boolean,
+    status: WaMessageStatus,
+    receipts: unknown,
+  ): boolean {
+    return (
+      fromMe &&
+      isJidGroup(chatJid) === true &&
+      statusRank(status) < statusRank(WaMessageStatus.READ) &&
+      statusRank(status) >= statusRank(WaMessageStatus.SENT) &&
+      this.readersOf(receipts) > 0
+    );
   }
 
   // Fusionne un accusé par destinataire dans la colonne JSON `receipts`.
@@ -1408,8 +1741,12 @@ export class WhatsappService
 
   // Mises à jour de discussions (non-lus, nom...). Sert notamment à refléter
   // dans le web le fait que tu as lu une conversation depuis ton téléphone.
-  // Mises à jour de discussions. Le `unreadCount` de WhatsApp y est AUTORITAIRE
-  // (reflète l'état multi-device, dont les lectures sur le téléphone).
+  // Mises à jour de discussions. ATTENTION au `unreadCount` de Baileys :
+  //  - 0 : lue (sur un autre appareil) ; -1 : « marquée non lue ». Absolus.
+  //  - > 0 : un INCRÉMENT (+1 par message entrant, cumulé par le tampon
+  //    d'événements), pas le total. L'écrire tel quel écrasait le compteur
+  //    (3 non-lus devenaient 1) ou, arrivé après une réponse, faisait
+  //    réapparaître un non-lu. Ignoré : touchChat compte déjà les entrants.
   private async onChatsUpdate(
     accountId: string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1423,7 +1760,8 @@ export class WhatsappService
     for (const raw of updates) {
       const ch = replay ? { id: raw?.id, pinned: raw?.pinned } : raw;
       if (!ch?.id || this.isIgnoredChat(ch.id)) continue;
-      const hasUnread = typeof ch.unreadCount === 'number';
+      const hasUnread =
+        typeof ch.unreadCount === 'number' && ch.unreadCount <= 0;
       const meta = this.chatMetaOf(ch);
       // Rien d'intéressant ici (ni non-lus, ni nom, ni archive/mute).
       if (
@@ -1466,13 +1804,14 @@ export class WhatsappService
       ) {
         continue; // plus rien à écrire après suppression de l'écho gardé
       }
-      // -1 = « marquée non lue » (pastille sans nombre), posé par WhatsApp
-      // (markChatAsRead read=false) et par markUnread : on le garde. Les autres
+      // Seuls 0 (lu) et -1 (« marquée non lue », pastille sans nombre, posé
+      // par WhatsApp et par markUnread) sont appliqués : les valeurs positives
+      // sont des incréments de Baileys, déjà comptés à la réception. Les autres
       // valeurs négatives sont ramenées à 0.
       const unread = hasUnread
         ? ch.unreadCount === -1
           ? -1
-          : Math.max(0, ch.unreadCount as number)
+          : 0
         : undefined;
       const name = await this.chatDisplayName(accountId, jid, ch.name);
       const row = await this.prisma.waChat
@@ -1796,6 +2135,7 @@ export class WhatsappService
     }
     // Le numéro @s.whatsapp.net est toujours une cible d'envoi valide.
     const target = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    if (isMetaAiJid(target)) throw new Error(META_AI_UNSUPPORTED);
     // Réponse : le message cité doit exister dans CETTE discussion, sinon on
     // refuse (jamais d'envoi « au hasard » sans la citation demandée).
     const quoted = quotedId
@@ -2092,6 +2432,7 @@ export class WhatsappService
     if (!/^(?:[0-9]+@(?:s\.whatsapp\.net|lid)|[0-9]+(?:-[0-9]+)?@g\.us)$/.test(toJid)) {
       throw new Error('Destinataire invalide');
     }
+    if (isMetaAiJid(toJid)) throw new Error(META_AI_UNSUPPORTED);
     const jid = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
     const row = await this.prisma.waMessage
       .findUnique({
@@ -2132,6 +2473,7 @@ export class WhatsappService
     if (!s.sock || s.connection.state !== ConnectionState.OPEN) {
       throw new Error('WhatsApp non connecté');
     }
+    if (isMetaAiJid(chatJid)) throw new Error(META_AI_UNSUPPORTED);
     const text = emoji.trim();
     // Une réaction = un seul emoji (ou '' pour retirer) : jamais du texte libre.
     // Hors liants (ZWJ, VS16) : seulement pictogrammes, drapeaux, teintes de
@@ -2185,6 +2527,7 @@ export class WhatsappService
       throw new Error('WhatsApp non connecté');
     }
     const target = (await this.resolvePn(accountId, chatJid)) ?? chatJid;
+    if (isMetaAiJid(target)) throw new Error(META_AI_UNSUPPORTED);
 
     // Contenu Baileys selon le type MIME du fichier uploadé.
     const mime = file.mimetype || 'application/octet-stream';
@@ -2261,6 +2604,19 @@ export class WhatsappService
       try {
         await s.sock.readMessages(keys);
         this.logger.log(`markRead: ${keys.length} lu(s) sur ${readJid}`);
+        // Reflète la lecture en local (repère du recalage des non-lus).
+        await this.prisma.waMessage
+          .updateMany({
+            where: {
+              accountId,
+              chatJid: jid,
+              fromMe: false,
+              id: { in: recent.map((r) => r.id) },
+              status: { notIn: [WaMessageStatus.READ, WaMessageStatus.PLAYED] },
+            },
+            data: { status: WaMessageStatus.READ },
+          })
+          .catch(() => undefined);
       } catch (e) {
         this.logger.warn(`markRead readMessages: ${e}`);
       }
@@ -2952,11 +3308,44 @@ export class WhatsappService
   ): Promise<void> {
     const s = this.ensureSession(accountId);
     if (!s.sock || s.connection.state !== ConnectionState.OPEN) return;
+    s.presenceSubs = [chatJid, ...s.presenceSubs.filter((j) => j !== chatJid)].slice(0, 10);
     try {
       const target = (await this.getLid(accountId, chatJid)) ?? chatJid;
       await s.sock.presenceSubscribe(target);
     } catch (e) {
       this.logger.warn(`subscribePresence ${chatJid}: ${e}`);
+    }
+  }
+
+  // En ligne / hors ligne. WhatsApp ne transmet « écrit… » et « en ligne »
+  // qu'aux appareils en ligne ; le pont se connecte hors ligne
+  // (markOnlineOnConnect: false) pour ne pas couper les notifications du
+  // téléphone. Comme WhatsApp Web, il passe donc en ligne tant qu'un onglet
+  // est réellement utilisé, et repasse hors ligne dès qu'il ne l'est plus.
+  // Seule une présence est envoyée : aucun message, aucun accusé.
+  setClientActive(clientId: string, active: boolean): void {
+    for (const s of this.sessions.values()) {
+      const before = s.activeClients.size > 0;
+      if (active) s.activeClients.add(clientId);
+      else s.activeClients.delete(clientId);
+      const after = s.activeClients.size > 0;
+      if (before !== after) void this.sendOnline(s, after);
+    }
+  }
+
+  private async sendOnline(s: AccountSession, online: boolean): Promise<void> {
+    if (!s.sock || s.connection.state !== ConnectionState.OPEN) return;
+    try {
+      await s.sock.sendPresenceUpdate(online ? 'available' : 'unavailable');
+    } catch (e) {
+      this.logger.warn(`[${s.accountId}] présence ${online}: ${e}`);
+      return;
+    }
+    this.logger.log(`[${s.accountId}] ${online ? 'en ligne (onglet utilisé)' : 'hors ligne'}`);
+    if (!online) return;
+    // L'abonnement à la présence d'un contact n'est servi qu'en ligne.
+    for (const jid of [...s.presenceSubs].reverse()) {
+      await this.subscribePresence(s.accountId, jid);
     }
   }
 
@@ -2973,14 +3362,23 @@ export class WhatsappService
       const id: string | undefined = u?.id;
       if (!id) return;
       const presences = u?.presences ?? {};
-      const first = Object.values(presences)[0] as
-        | { lastKnownPresence?: string | null }
-        | undefined;
+      const [participant, first] = (Object.entries(presences)[0] ?? []) as [
+        string | undefined,
+        { lastKnownPresence?: string | null } | undefined,
+      ];
+      const jid = (await this.resolvePn(accountId, id)) ?? id;
+      // Groupe : qui écrit (le nom s'affiche devant « écrit… »).
+      let participantName: string | null = null;
+      if (isJidGroup(jid) && participant && participant !== id) {
+        const pjid = (await this.resolvePn(accountId, participant)) ?? participant;
+        participantName = await this.nameFor(accountId, pjid);
+      }
       const presence: WaPresence = {
         accountId,
-        jid: (await this.resolvePn(accountId, id)) ?? id,
+        jid,
         kind: this.mapPresence(first?.lastKnownPresence),
         at: Date.now(),
+        participantName,
       };
       this.emit('presence', accountId, presence);
     } catch (e) {
@@ -3029,12 +3427,43 @@ export class WhatsappService
           .catch(() => [] as { jid: string }[])
       ).map((c) => c.jid),
     );
-    return rows
+    const kept = rows
       .filter((r) => !this.isIgnoredChat(r.jid))
       .filter((r) => !this.isPlaceholderChat(r))
       .filter((r) => !this.isEmptyDirectChat(r))
-      .filter((r) => !communityJids.has(r.jid))
-      .map((r) => this.chatRowToDto(accountId, r));
+      .filter((r) => !communityJids.has(r.jid));
+    // Dernier message de chaque discussion (coches dans la liste), en une
+    // requête.
+    const jids = kept.map((r) => r.jid);
+    const lasts = jids.length
+      ? await this.prisma.$queryRaw<
+          {
+            chat_jid: string;
+            id: string;
+            from_me: boolean;
+            status: string;
+            receipts: unknown;
+          }[]
+        >`
+          SELECT DISTINCT ON (chat_jid) chat_jid, id, from_me, status, receipts
+          FROM wa_messages
+          WHERE account_id = ${accountId} AND chat_jid IN (${Prisma.join(jids)})
+          ORDER BY chat_jid, sent_at DESC`.catch(() => [])
+      : [];
+    const lastBy = new Map(lasts.map((l) => [l.chat_jid, l]));
+    return kept.map((r) => {
+      const dto = this.chatRowToDto(accountId, r);
+      const l = lastBy.get(r.jid);
+      return {
+        ...dto,
+        lastMessageId: l?.id ?? null,
+        lastMessageFromMe: l?.from_me ?? false,
+        lastMessageStatus: (l?.status as WaMessageStatus | undefined) ?? null,
+        lastMessagePartialRead: l
+          ? this.isPartialRead(r.jid, l.from_me, l.status as WaMessageStatus, l.receipts)
+          : false,
+      };
+    });
   }
 
   // Carnet du compte : contacts 1:1 joignables par numéro (JID pn), un par
@@ -3131,6 +3560,48 @@ export class WhatsappService
       hasMore,
       nextBefore,
     };
+  }
+
+  // Derniers messages non lus d'une discussion (info-bulle de la liste).
+  // LECTURE SEULE : rien n'est marqué lu, aucun accusé n'est envoyé.
+  async listUnreadPreview(
+    accountId = DEFAULT_ACCOUNT_ID,
+    chatJid: string,
+    limit: number,
+  ): Promise<WaUnreadPreview> {
+    const chat = await this.prisma.waChat
+      .findUnique({
+        where: { accountId_jid: { accountId, jid: chatJid } },
+        select: { unreadCount: true },
+      })
+      .catch(() => null);
+    const total = chat?.unreadCount ?? 0;
+    if (total <= 0) return { messages: [], total: 0 };
+    const rows = await this.prisma.waMessage.findMany({
+      where: {
+        accountId,
+        chatJid,
+        fromMe: false,
+        type: { not: WaMessageType.SYSTEM },
+      },
+      orderBy: { sentAt: 'desc' },
+      take: Math.min(total, limit),
+    });
+    const isGroup = isJidGroup(chatJid);
+    const messages = rows.reverse().map((r) => {
+      const m = this.msgRowToDto(accountId, r);
+      const text = previewOf({
+        ...m,
+        text: this.resolveMentions(accountId, m.text),
+      });
+      return {
+        id: m.id,
+        timestamp: m.timestamp,
+        senderName: isGroup ? m.senderName : null,
+        text: text.length > 400 ? text.slice(0, 399) + '…' : text,
+      };
+    });
+    return { messages, total: Math.max(total, messages.length) };
   }
 
   // Recherche plein-texte dans les messages d'un compte (API Agent/LLM). Insensible
@@ -3504,6 +3975,23 @@ export class WhatsappService
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     extra?: { rawMessage?: any; fileSha256?: string | null },
   ): Promise<void> {
+    // Le statut ne recule jamais : l'écho d'un envoi (« envoyé ») arrive
+    // souvent APRÈS les accusés « distribué »/« lu » déjà enregistrés, et les
+    // écrasait (coches restées grises). m est corrigé pour l'émission au front.
+    const prev = await this.prisma.waMessage
+      .findUnique({
+        where: {
+          accountId_chatJid_id: { accountId, chatJid: m.chatJid, id: m.id },
+        },
+        select: { status: true },
+      })
+      .catch(() => null);
+    if (
+      prev &&
+      statusRank(prev.status as WaMessageStatus) > statusRank(m.status)
+    ) {
+      m.status = prev.status as WaMessageStatus;
+    }
     const row = this.toMessageRow(accountId, m, extra);
     await this.prisma.waMessage
       .upsert({
@@ -3543,12 +4031,13 @@ export class WhatsappService
     try {
       const content = rawMessageContent
         ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (normalizeMessageContent(rawMessageContent) as any)
+          (unwrapContent(rawMessageContent) as any)
         : null;
       if (!content) return { rawContent: rawMessageContent ?? null, fileSha256: null };
       const node =
         content.imageMessage ??
         content.videoMessage ??
+        content.ptvMessage ??
         content.audioMessage ??
         content.documentMessage ??
         content.stickerMessage ??
@@ -3779,8 +4268,61 @@ export class WhatsappService
       });
       for (const g of groups) await this.refreshChatPreview(accountId, g.chatJid);
       this.logger.log(`aperçus recalés (${groups.length} discussions) [${accountId}]`);
+      await this.repairOutgoingStatuses(accountId);
+      const fixed = await this.reconcileUnread(accountId, undefined, false);
+      if (fixed > 0) this.logger.log(`non-lus recalés (${fixed} discussions) [${accountId}]`);
     } catch (e) {
       this.logger.warn(`repairChatPreviews: ${e}`);
+    }
+  }
+
+  // Non-lus : WhatsApp n'envoie pas toujours de chats.update quand tu lis ou
+  // réponds depuis le téléphone, le compteur restait alors bloqué. Repère :
+  // le dernier message que l'on sait LU (le tien, ou un entrant passé « lu »
+  // par l'accusé read-self d'un autre de tes appareils). Les entrants
+  // postérieurs sont les seuls non-lus possibles. Ne fait que BAISSER le
+  // compteur, ne touche pas au « non lu » manuel (-1). Base locale seulement :
+  // aucun accusé n'est envoyé à WhatsApp. Sans jids : toutes les discussions.
+  private async reconcileUnread(
+    accountId: string,
+    jids?: string[],
+    emit = true,
+  ): Promise<number> {
+    if (jids && jids.length === 0) return 0;
+    try {
+      const rows = await this.prisma.$queryRaw<{ jid: string }[]>`
+        UPDATE wa_chats c SET unread_count = sub.n, updated_at = now()
+        FROM (
+          SELECT c2.account_id, c2.jid,
+            (SELECT count(*)::int FROM wa_messages m
+              WHERE m.account_id = c2.account_id AND m.chat_jid = c2.jid
+                AND NOT m.from_me AND m.type <> 'system'
+                AND m.sent_at > ref.t) AS n
+          FROM wa_chats c2
+          CROSS JOIN LATERAL (
+            SELECT max(m.sent_at) AS t FROM wa_messages m
+            WHERE m.account_id = c2.account_id AND m.chat_jid = c2.jid
+              AND (m.from_me OR m.status IN ('read', 'played'))
+          ) ref
+          WHERE c2.account_id = ${accountId} AND c2.unread_count > 0
+            AND ref.t IS NOT NULL
+            ${jids ? Prisma.sql`AND c2.jid IN (${Prisma.join(jids)})` : Prisma.empty}
+        ) sub
+        WHERE c.account_id = sub.account_id AND c.jid = sub.jid
+          AND sub.n < c.unread_count
+        RETURNING c.jid`;
+      if (emit && rows.length > 0) {
+        const chats = await this.prisma.waChat.findMany({
+          where: { accountId, jid: { in: rows.map((r) => r.jid) } },
+        });
+        for (const ch of chats) {
+          this.emit('chat-upsert', accountId, this.chatRowToDto(accountId, ch));
+        }
+      }
+      return rows.length;
+    } catch (e) {
+      this.logger.warn(`reconcileUnread: ${e}`);
+      return 0;
     }
   }
 
@@ -3877,10 +4419,22 @@ export class WhatsappService
     const s = this.ensureSession(accountId);
     const pn = s.lidToPn.get(`${num}@lid`);
     const candidates = [pn, `${num}@s.whatsapp.net`, `${num}@lid`];
+    // Mention de toi : ton nom WhatsApp, pas ta fiche de carnet (souvent
+    // juste ton numéro).
+    if (candidates.some((jid) => jid && this.isSelfJid(accountId, jid))) {
+      return cleanName(s.connection.me?.name) ?? 'Moi';
+    }
     for (const jid of candidates) {
       if (!jid) continue;
       const entry = s.nameByJid.get(jid);
-      const name = entry?.carnet ?? entry?.push;
+      // Un « nom » qui n'est qu'un numéro (+33 6 …) n'apporte rien : on
+      // passe au pseudo WhatsApp.
+      const name =
+        [entry?.carnet, entry?.push].find(
+          (n) => n && !/^[+\d\s().-]+$/.test(n),
+        ) ??
+        entry?.carnet ??
+        entry?.push;
       if (name) return name;
     }
     return null;
@@ -3903,6 +4457,14 @@ export class WhatsappService
 
   // Discussions à NE PAS afficher: Status/Stories (status@broadcast) et
   // newsletters/channels — ce ne sont pas des conversations.
+  // Le JID est-il le compte lui-même (numéro ou LID) ?
+  private isSelfJid(accountId: string, jid: string): boolean {
+    const s = this.ensureSession(accountId);
+    const me = s.connection.me?.jid ?? null;
+    const lid = s.sock?.user?.lid ? jidNormalizedUser(s.sock.user.lid) : null;
+    return jid === me || jid === lid;
+  }
+
   private isIgnoredChat(jid: string | null | undefined): boolean {
     if (!jid) return true;
     return jid === 'status@broadcast' || jid.endsWith('@newsletter');
@@ -4100,7 +4662,9 @@ export class WhatsappService
     return {
       accountId,
       jid: row.jid,
-      name: row.name,
+      // Ta propre discussion (notes à soi) : « Moi », comme l'app officielle,
+      // plutôt que ton numéro.
+      name: this.isSelfJid(accountId, row.jid) ? 'Moi' : row.name,
       isGroup: row.isGroup,
       unreadCount: row.unreadCount,
       lastMessageTs: row.lastMessageAt ? row.lastMessageAt.getTime() : null,
@@ -4140,6 +4704,7 @@ export class WhatsappService
       clientId: string | null;
       editedAt?: Date | null;
       starred?: boolean;
+      receipts?: unknown;
     },
   ): WaMessage {
     const dto: WaMessage = {
@@ -4159,6 +4724,9 @@ export class WhatsappService
       clientId: row.clientId,
       ...(row.editedAt ? { edited: true } : {}),
       ...(row.starred ? { starred: true } : {}),
+      ...(this.isPartialRead(row.chatJid, row.fromMe, row.status as WaMessageStatus, row.receipts)
+        ? { partialRead: true }
+        : {}),
     };
     // URL backend du média (servie déchiffrée à la demande).
     this.attachMediaUrl(dto);

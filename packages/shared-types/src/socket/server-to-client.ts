@@ -37,6 +37,8 @@ export interface ServerToClientEvents {
     id: string;
     chatJid: string;
     status: WaMessageStatus;
+    // Groupe : lu par au moins un membre, pas par tous (coche bleue + grise).
+    partialRead?: boolean;
   }) => void;
 
   // Message supprimé « pour moi » : à retirer de l'affichage.

@@ -27,7 +27,7 @@ RUN pnpm --filter @app/shared-types build \
  && cd apps/web && pnpm run build
 
 # --- runtime: SPA servie par nginx (fallback try_files) ---
-FROM nginx:1.27-alpine AS runtime
+FROM nginx:alpine AS runtime
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 EXPOSE 80

@@ -6,6 +6,7 @@ import { markRead } from '../../services/socket';
 import { useGetMessagesQuery } from './messagesApi';
 import MessageBubble from './MessageBubble';
 import MessageScroller from './MessageScroller';
+import { TypingBubble } from '../chats/Typing';
 
 interface Props {
   jid: string;
@@ -115,8 +116,10 @@ export default function MessageList({ jid, accountId }: Props) {
           key={m.clientId ?? m.id}
           message={m}
           quoted={m.quotedId ? messagesById.get(m.quotedId) ?? null : null}
+          onJumpTo={(id) => dispatch(setFocusMessage({ chatJid: jid, id }))}
         />
       )}
+      footer={<TypingBubble accountId={accountId} jid={jid} />}
     />
     </>
   );

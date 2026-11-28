@@ -169,6 +169,12 @@ export function setTyping(
   socket?.emit('wa:typing', { accountId, chatJid, typing });
 }
 
+// Onglet réellement utilisé (visible, au premier plan, activité récente) :
+// le serveur passe alors le compte « en ligne » pour recevoir « écrit… ».
+export function setClientActive(active: boolean): void {
+  socket?.emit('wa:active', { active });
+}
+
 // S'abonne à la présence d'un contact.
 export function subscribePresence(accountId: string, jid: string): void {
   socket?.emit('wa:subscribe-presence', { accountId, jid });
